@@ -1,0 +1,382 @@
+---
+title: "Data Cleaning"
+output: html_notebook
+---
+
+# 1. Required packages
+```{r}
+library(tidyverse)
+library(dplyr)
+library(anytime) # Convert UNIX epoch to date format
+library(eeptools) # Calculate age of pipes
+library(ggplot2)
+library(lubridate)
+library(car)
+library(visdat) # Visualize missing values
+```
+
+# 2. Data Exploration
+## 2.1 Data import and join
+```{r}
+# Import the data sets
+ins <- read.csv("C:/Users/Claire/Desktop/Mott MacDonald/inspection_data.csv")
+pip <- read.csv("C:/Users/Claire/Desktop/Mott MacDonald/pipe_data2.csv")
+gis <- read.csv("C:/Users/Claire/Desktop/Mott MacDonald/GIS_SW_PIPES.csv")
+# Only select the columns we need from three data sets
+# Inspection data 
+glimpse(ins)
+ins_new <- subset(ins, select = c(assetid, Inspection.Date,
+                                  CCTV...StructuralPeakGrade,
+                                  CCTV...ServicePeakGrade))
+# Pipe data from the company's system
+glimpse(pip)
+# GIS stormwater data 
+#structure
+glimpse(gis)
+# Choose those columns we are interested
+gis_sw <- subset(gis, 
+                 select = c(SW_OBJECTTYPE, SW_SAP_ID,
+                            SW_CAPACITY_DEV_SCENARIO,
+                            SW_CRE, SW_DEPTH_DOWNSTREAM_M,
+                            SW_DEPTH_UPSTREAM_M, SW_DIAMETER_MM,
+                            SW_GRADIENT_PC, SW_INSTALLATION_DATE,
+                            SW_INVERT_LEVEL_DOWNSTREAM_M,
+                            SW_IS_LINED, SW_LENGTH_GIS_M,
+                            SW_MATERIAL, SW_SHAPE, 
+                            SW_OPERATIONAL_AREA, SW_GIS_ID))
+glimpse(gis_sw)
+
+# Merging three data frames using left join
+join1 <- left_join(ins_new, pip, 
+                  by = c("assetid" = "assetid"))
+data <- left_join(join1, gis_sw,
+                  by = c("sap_id" = "SW_SAP_ID"))
+# Structure of the result 
+glimpse(data)
+# Observations of top 6 rows
+head(data)
+# Summary of the data set
+summary(data)
+# Check percentage of missing values for each column
+(colMeans(is.na(data)))*100
+# Drop three columns with more than 80% missing values
+data <- subset(data, select = -c(downstream_depth, 
+                                 upstream_depth, 
+                                 likelihood_of_failure))
+glimpse(data)
+```
+
+## 2.2 Response Variables
+### According to the 4th ediction of NZ Pipe Inspection Manual, both structual and service grades (integars from 1 to 5) use the same peak score ranges. Grade 1-3 indicates low preliminary condition while Grade 4-5 mean that there are defects that have the potnetial to impact on the structure or serviceability of the pipe. Since the objective is to predict poor condition of pipes, the response column needs to be converted into dummy variable with 1 (poor condition) and 0 (good condition). 
+### 2.2.1 Pipe Structual Peak Grade
+```{r}
+# Column CCTV...StructuralPeakGrade
+# Check missing values
+table(is.na(data$CCTV...StructuralPeakGrade))
+# Drop missing values
+data1 <- data %>% 
+  tidyr::drop_na(CCTV...StructuralPeakGrade)
+# Count number of different values in the column
+data1 %>% count(CCTV...StructuralPeakGrade)
+# Based on Pipe Inspection Manual (3rd ed), the minimum grade should be 1, and the maximum is 5.8. Any grades above 3 means poor or fail condition. 
+# Delete the rows of 0 first. 
+data1 <- data1 %>% filter(CCTV...StructuralPeakGrade >= 1)
+# Convert values greater than 3 with 1,
+# and values less or equal to 3 with 0.
+data1$CCTV...StructuralPeakGrade[data1$CCTV...StructuralPeakGrade <= 3] <- 0
+data1$CCTV...StructuralPeakGrade[data1$CCTV...StructuralPeakGrade >3] <- 1
+# Add a new column which is the response variable
+data2 <- data1 %>% mutate(structural_grade = CCTV...StructuralPeakGrade) 
+# Convert the type of column to factor
+data2$structural_grade <- as.factor(data2$structural_grade)
+# Plot the column
+ggplot(data2, aes(structural_grade, fill = structural_grade)) + 
+  geom_bar() +
+  scale_fill_brewer(palette = "Dark2")
+# Structure of data2
+glimpse(data2)
+
+# Column CCTV...StructuralMeanGrade
+# According to the Manual, the mean score is 
+# Check missing values
+#table(is.na(data$CCTV...StructuralMeanGrade))
+# Drop missing values
+#data1 <- data %>% 
+  #tidyr::drop_na(CCTV...StructuralMeanGrade)
+# Check numbers of different values in the column
+#data1 %>% count(CCTV...StructuralMeanGrade)
+# Based on Pipe Inspection Manual (3rd ed), the minimum grade should be 1, and the maximum is 5.8. Any grades above 3 means poor or fail condition. 
+# Delete the rows of 0 first. 
+#data1 <- data1 %>% filter(CCTV...StructuralMeanGrade >= 1)
+# Convert values greater than 3 with 1,
+# and values less or equal to 3 with 0.
+#data1$CCTV...StructuralMeanGrade[data1$CCTV...StructuralMeanGrade <= 3] <- 0
+#data1$CCTV...StructuralMeanGrade[data1$CCTV...StructuralMeanGrade >3] <- 1
+# verify
+#data1 %>% count(CCTV...StructuralMeanGrade)
+#df <- data1 %>%
+  #mutate(sum = CCTV...StructuralPeakGrade + CCTV...StructuralMeanGrade,
+         #structure_grade = if_else(sum == 2, 1, 0)) %>%
+  #select(-sum)
+```
+
+### 2.2.2 Pipe Serviceability Peak Grade
+```{r}
+# Column CCTV...ServicePeakGrade
+# Check missing values
+table(is.na(data2$CCTV...ServicePeakGrade)) # No NAs
+# Count number of different values in the column
+data2 %>% count(CCTV...ServicePeakGrade)
+# Delete the rows of 0 first. 
+data3 <- data2 %>% filter(CCTV...ServicePeakGrade >= 1)
+# Convert values greater than 3 with 1,
+# and values less or equal to 3 with 0.
+data3$CCTV...ServicePeakGrade[data3$CCTV...ServicePeakGrade <= 3] <- 0
+data3$CCTV...ServicePeakGrade[data3$CCTV...ServicePeakGrade >3] <- 1
+# Add a new column which is the response variable
+df <- data3 %>% mutate(service_grade = CCTV...ServicePeakGrade) 
+# Convert the type of column to factor
+df$service_grade <- as.factor(df$service_grade)
+# Plot the column
+ggplot(df, aes(service_grade, fill=service_grade)) + 
+  geom_bar() +
+  scale_fill_brewer(palette = "Dark2")
+```
+
+## 2.3 Independent Variables
+### 2.3.1 Pipe Age
+```{r}
+# Column install_date and Inspection.Date
+# Change the values of install_date into date format
+df$install_date <- anydate(df$install_date)
+# Change the datetime format of inspection date
+df$inspection_date <- dmy_hm(df$Inspection.Date)
+# Only grab the date without time from the inspection date
+df$inspection_date <- as.Date(df$inspection_date)
+# Check any missing values 
+table(is.na(df$install_date))
+table(is.na(df$inspection_date))
+# Remove rows with missing values
+df <- df %>% 
+  tidyr::drop_na(c(install_date, inspection_date))
+# Calculate the difference between install date and inspection date to get pipe age.
+df$years <- trunc((df$install_date %--% df$inspection_date)/years(1))
+# Count the number of each value in the year column
+df %>%
+  group_by(years) %>%
+  summarize(number_rows = n())
+# drop rows with negative values
+df1 <- df %>% filter(years >= 0)
+
+# Visualize the column years(age at time of inspection)
+hist(df1$years,
+     main="Histogram for Pipe Age",
+     xlab="Age")
+hist(df1$install_date,breaks=50,
+     main="Histogram for Installation Year",
+     xlab="Year")
+```
+
+### 2.3.2 Pipe Material
+```{r}
+# We have two columns related to pipe materials in the data set,
+# one is from our system and the other is from AC GIS.
+# And we decided to use the latter because it's more general which can be applied to any other pipe infrastructures. 
+# Column GIS SW_MATERIAL
+df1 %>%
+  group_by(SW_MATERIAL) %>%
+  summarise(number = n())
+# Remove rows with missing values
+df1 <- subset(df1, SW_MATERIAL != "")
+df2 <- df1 %>% 
+  tidyr::drop_na(SW_MATERIAL)
+
+# Replace the pipe materials whose count number is less than 100 with "OTHR".
+df2$material <- with(df2, 
+                ave(SW_MATERIAL, SW_MATERIAL,
+                FUN = function(i) replace(i, length(i) <100, 'OTHR')))
+# Visualize the column
+ggplot(df2, aes(x=material)) +
+  geom_bar() +
+  ggtitle("Plot of Pipe Materials") +
+  xlab("Pipe Materials")
+
+```
+
+### 2.3.3 Pipe Rehabilitation
+```{r}
+# Column SW_IS_LINED
+# Pipes with rehabilitation need to be excluded in this data set as it will affect the results.
+table(is.na(df2$SW_IS_LINED))
+# There is no missing values
+df2 %>% 
+  group_by(SW_IS_LINED) %>%
+  summarise(n = n())
+# Select those pipes have not been lined
+df3 <- df2 %>% filter(SW_IS_LINED != "Y")
+```
+
+### 2.3.4 Pipe Diameter(m)
+```{r}
+# Column SW_DIAMETER_MM
+# check any NAs
+table(is.na(df3$diameter))
+# Drop missing values
+df4 <- df3 %>% drop_na(diameter)
+# Check number of each value in the column
+df4 %>% count(diameter)
+# Remove values of "0", "0.001" and "0.004" as they don't make sense
+df4 <- df4 %>% filter(diameter >= 0.1)
+# boxplot 
+boxplot(df4$diameter)
+# Remove extremely high dots 
+df4 <- subset(df4, df4$diameter <= 3)
+summary(df4$diameter)
+# Structure of df4
+glimpse(df4)
+```
+
+### 2.3.5 Pipe Length(m)
+```{r}
+# Column SW_LENGTH_GIS_M
+table(is.na(df4$SW_LENGTH_GIS_M)) # no missing values
+df4 %>%
+  group_by(SW_LENGTH_GIS_M) %>%
+  summarise(n = n()) 
+# Plots to check any special number of pipe length
+boxplot(df4$SW_LENGTH_GIS_M)
+hist((df4$SW_LENGTH_GIS_M))
+# Remove values over 300m
+df5 <- subset(df4, df4$SW_LENGTH_GIS_M < 300)
+df5$pipe_length <- df5$SW_LENGTH_GIS_M
+# Scatter plot of pipe length
+ggplot(df5, aes(x=inspection_date, y=pipe_length)) + 
+  geom_point()
+# descriptive summary of pipe length
+summary(df5$pipe_length)
+# Structure of df5
+glimpse(df5)
+```
+
+### 2.3.6 Pipe Depth Upstream
+```{r}
+# Column SW_DEPTH_UPSTREAM_M)
+table(is.na(df5$SW_DEPTH_UPSTREAM_M))
+# Drop NAs
+df6 <- df5 %>% 
+  tidyr::drop_na(SW_DEPTH_UPSTREAM_M)
+# Count the number of different values in the column
+df6 %>% count(SW_DEPTH_UPSTREAM_M)
+# Histogram plot
+hist(df6$SW_DEPTH_UPSTREAM_M)
+# Boxplot
+boxplot(df6$SW_DEPTH_UPSTREAM_M)
+# Drop some values based on pipe design 
+df6 <- df6 %>% filter(SW_DEPTH_UPSTREAM_M >= 0.1 &
+                        SW_DEPTH_UPSTREAM_M < 10)
+
+df6$pipe_depth <- df6$SW_DEPTH_UPSTREAM_M
+# Summary
+summary(df6$pipe_depth)
+
+# Column SW_DEPTH_DOWNSTREAM_M
+# Detect missing values
+#table(is.na(df5$SW_DEPTH_DOWNSTREAM_M))
+# Drop missing values
+#df5 <- df5 %>% 
+  #tidyr::drop_na(SW_DEPTH_DOWNSTREAM_M)
+# Detect outliers in the column 
+#boxplot(df5$SW_DEPTH_DOWNSTREAM_M)
+#hist(df5$SW_DEPTH_DOWNSTREAM_M)
+# Count the number of values in the column
+#df5 %>% count(SW_DEPTH_DOWNSTREAM_M)
+#df5 <- df5 %>% filter(SW_DEPTH_DOWNSTREAM_M >= 0.1 &
+                      #SW_DEPTH_DOWNSTREAM_M < 20)
+#summary(df5$SW_DEPTH_DOWNSTREAM_M)
+```
+
+### 2.3.7 Pipe Shape
+```{r}
+# Column SW_SHAPE
+# Based on Table2.11 from 3rd edition of NZ Pipe Inspection Manual,
+# there are 7 categories of pipe shape, CIRC (Circular Pipe), EGG(Egg-Shaped),OVAL(Oval-Shaped), RECT(Rectangular Box), BOX(Square Box), USHP(U-Shaped), and others.
+table(is.na(df6$SW_SHAPE)) # no NAs
+df6 %>% 
+  group_by(SW_SHAPE) %>%
+  summarise(n=n())
+# Drop blank values 
+df7 <- df6 %>% filter(SW_SHAPE != "")
+# Structure of df7
+glimpse(df7)
+```
+
+### 2.3.8 Categorical Varibles
+```{r}
+# Column SW_CRE - Consolidated receiving environment
+df7 %>% count(SW_CRE)
+# plot
+ggplot(df7, aes(x=SW_CRE, fill=structural_grade)) +
+  geom_bar() +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(guide = guide_axis(angle=45))
+
+# Column SW_OBJECTTYPE
+df7 %>% count(SW_OBJECTTYPE)
+
+# Column SW_OPERATIONAL_AREA
+# "SS" means Stormwater South, "SC" is Stormwater Central, and "SN" indicates Stormwatr North
+table(is.na(df7$SW_OPERATIONAL_AREA))
+# Count the number of SS, SC and SN in the column
+df7 %>% 
+  group_by(SW_OPERATIONAL_AREA) %>%
+  summarise(n=n())
+# Bar Plot 
+ggplot(df7, aes(x=SW_OPERATIONAL_AREA, fill=SW_OPERATIONAL_AREA)) +
+  geom_bar() +
+  scale_fill_brewer(palette = "Dark2")
+```
+
+### ?? 2.3.9 Invert Level(m)
+```{r}
+# Column SW_INVERT_LEVEL_DOWNSTREAM_M
+# Check missing values
+table(is.na(df7$SW_INVERT_LEVEL_DOWNSTREAM_M))
+# Delete NAs
+df8 <- df7 %>% drop_na(SW_INVERT_LEVEL_DOWNSTREAM_M)
+# Check other values
+df8 %>%
+  group_by(SW_INVERT_LEVEL_DOWNSTREAM_M) %>%
+  summarise(n=n())
+# Histogram plot
+hist(df8$SW_INVERT_LEVEL_DOWNSTREAM_M)
+# Detect outliers using Boxplot
+boxplot(df8$SW_INVERT_LEVEL_DOWNSTREAM_M)
+# Usually invert level is equal or more than 0, so we need to drop negative numbers
+df8 <- df8 %>% filter(SW_INVERT_LEVEL_DOWNSTREAM_M >= 0)
+summary(df8$SW_INVERT_LEVEL_DOWNSTREAM_M)
+# Structure of df8
+glimpse(df8)
+```
+`
+## 2.4 Variables Selection
+```{r}
+# Select those variables associated with the project topic
+clean_df <- subset(df7, select = c(install_date, years,
+                                   material, diameter,
+                                   pipe_length, pipe_depth,
+                                   SW_SHAPE, SW_CRE,
+                                   SW_OPERATIONAL_AREA,
+                                   structural_grade, service_grade,
+                                   SW_GIS_ID)) 
+head(clean_df)
+# summary
+summary(clean_df)
+# Export the clean data frame to .csv
+write.csv(clean_df, 
+          "C:/Users/Claire/Desktop/Mott MacDonald\\SW_Pipe.csv",
+          row.names = FALSE)
+
+```
+
+
+
