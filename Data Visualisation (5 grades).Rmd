@@ -1,0 +1,516 @@
+---
+title: "Data Exploration & Visualisation (5 grades)"
+author: "Fan"
+date: '2022-04-13'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library, include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(ggmap)
+library(devtools)
+library(maps)
+library(ggpubr)
+library(corrplot)
+library(PerformanceAnalytics)
+library(caret)
+library(ROSE)
+
+# Import dataset
+SW_data <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\df_clean.csv")
+```
+
+# 1. Geomap 
+```{r}
+# Coordinates for location of interest
+akl_map <- get_stamenmap(
+  bbox = c(left = 174.55, bottom = -37.0000, 
+           right = 174.95, top = -36.7500),
+  maptype = "terrain",
+  zoom = 12
+)
+ggmap(akl_map)
+
+```
+# 2. Response variables
+```{r}
+summary(SW_data)
+
+# check distributions of each value in structural condition and service condition
+table(SW_data$structural_grade)
+# Convert values of structrual conditions to five grades from 1 to 5
+SW_data$structural_grade[SW_data$structural_grade < 4.6 &
+                             SW_data$structural_grade >= 3.4] <- 4
+SW_data$structural_grade[SW_data$structural_grade >= 4.6] <- 5
+
+# Service condition 
+table(SW_data$service_grade)
+# Convert values of structrual conditions to five grades from 1 to 5
+SW_data$service_grade[SW_data$service_grade < 4.6 &
+                             SW_data$service_grade >= 3.4] <- 4
+SW_data$service_grade[SW_data$service_grade >= 4.6] <- 5
+
+# Convert the type from numeric to factors
+SW_data$structural_grade <- as.factor(SW_data$structural_grade)
+SW_data$service_grade <- as.factor(SW_data$service_grade)
+# Bar plot of pipe conditions
+# structural condition
+ggplot(SW_data, aes(x=structural_grade, fill = structural_grade)) + 
+  geom_bar(alpha=0.6) + 
+  scale_fill_discrete(name = "Structual Condition", 
+                      labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  labs(title = "Distribution of Pipe Structural Condition",
+       x = "Structural Condition",
+       y = "Count")
+# service condition
+ggplot(SW_data, aes(x=service_grade, fill = service_grade)) + 
+  geom_bar(alpha=0.6) + 
+  scale_fill_discrete(name = "Service Condition", 
+                      labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  labs(title = "Distribution of Pipe Service Condition",
+       x = "Service Condition",
+       y = "Count")
+
+
+```
+
+# 3. Independent Vairables
+
+## 3.1 Pipe Age
+
+Pipe age was calculated by the difference between pipe installation date and inspection date. 
+```{r}
+# Visualization plots
+# Histogram plot of pipe age
+annotations <- data.frame(
+  x = c(round(min(SW_data$years), 2), round(median(SW_data$years), 2), round(max(SW_data$years), 2)),
+  y = c(4, 52, 5),
+  label = c("Min:", "Median:", "Max:")
+) 
+age1 <- ggplot(data=SW_data, aes(x=years)) +
+  geom_histogram(color="black", fill="grey", bins = 30, boundary = 0) + 
+  geom_text(data = annotations,  aes(x = x, y = y, label = paste(label, x)), size = 3, fontface = "bold") +
+  labs(title = "Histogram of Pipe Age", 
+       x = "Age(Years)", 
+       y = "Count")
+
+age2 <- ggplot(SW_data, aes(x=years, y = factor(structural_grade), fill = factor(structural_grade))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Pipe Age by Structural Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Age") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"),
+                      guide = guide_legend(reverse = TRUE))
+
+age3 <- ggplot(SW_data, aes(x=years, y = factor(service_grade), fill = factor(service_grade))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Pipe Age by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Age") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"),
+                      guide = guide_legend(reverse = TRUE))
+
+ggarrange(age1, # first row with histogram plot
+          ggarrange(age2, age3, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+### 3.1.1 Pipe Age Density Plot by conditions
+```{r}
+# density plot of pipe age by structural condition
+ggplot(data=SW_data, aes(x=years, fill=structural_grade)) +
+  geom_density(alpha=0.6) +
+  facet_grid(structural_grade ~ .) +
+  labs(title = "Histogram of Pipe Age by Structural Condition", 
+       x = "Age(Years)", 
+       y = "Density",
+       fill = "Structural Condition") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10))
+
+# density plot of pipe age by service condition
+ggplot(data=SW_data, aes(x=years, fill=service_grade)) +
+  geom_density(alpha=0.6) +
+  facet_grid(service_grade ~ .) +
+  labs(title = "Histogram of Pipe Age by Service Condition", 
+       x = "Age(Years)", 
+       y = "Density",
+       fill = "Service Condition") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10))
+```
+
+## 3.2 Pipe Material 
+```{r}
+# Bar chart of pipe material
+SW_data %>% 
+    count(mat = factor(material)) %>% 
+    mutate(pct = prop.table(n)) %>% 
+    ggplot(aes(x = mat, y = pct, label = scales::percent(pct))) + 
+    geom_col(position = 'dodge', fill="grey", color="black") + 
+    geom_text(position = position_dodge(width = .9),    # move to center of bars
+              vjust = -0.5,    # nudge above top of bar
+              size = 3) + 
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = "Percentage of Pipe Materials",
+         x = "Material",
+         y = "Percentage")
+
+# Save a table of material and structural condition
+table1 <- table(SW_data$structural_grade, SW_data$material)
+table2 <- table(SW_data$service_grade, SW_data$material)
+# view tables
+table1
+# Plot the result
+barplot(prop.table(table1,margin = 2),
+        legend.text = TRUE,
+        args.legend = list(x = "topright"),
+        beside = TRUE,
+        main = "Percentage of Pipes in Different Structural Conditions by Material")
+barplot(prop.table(table2,margin = 2),
+        legend.text = TRUE,
+        args.legend = list(x = "topright"),
+        beside = TRUE,
+        main = "Percentage of Pipes in Good and Poor Service Condition by Material")
+
+# boxplot of distribution of pipe age by different materials
+boxplot(SW_data$years ~ SW_data$material)
+
+
+```
+## 3.3 pipe diameter (mm)
+```{r}
+# Histogram plot
+h_pd <- ggplot(SW_data, aes(diameter)) +
+  geom_histogram(bins=30, color="black", fill="grey", boundary = 0) + 
+  labs(title = "Distribution of Pipe Diameter", 
+       x = "Diameter(m)", 
+       y = "Count")
+
+# Box Plot for pipe diameter by conditions
+b_pd <- ggplot(SW_data, aes(x=diameter, y = factor(structural_condition), fill = factor(structural_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Diameter by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Diameter(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"))
+
+b_pd2 <- ggplot(SW_data, aes(x=diameter, y = factor(service_condition), fill = factor(service_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Diameter by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Diameter(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"))
+
+ggarrange(h_pd, # first row with histogram plot
+          ggarrange(b_pd, b_pd2, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+## 3.4 pipe length(m)
+```{r}
+# Histogram plot
+h_pl <- ggplot(SW_data, aes(pipe_length)) +
+  geom_histogram(bins=30, boundary = 0,color="black", fill="grey") +
+  labs(title = "Distribution of Pipe Length",
+       x = "Pipe Length(m)",
+       y = "Count")
+# Box Plot for pipe diameter by conditions
+b_pl <- ggplot(SW_data, aes(x=pipe_length, y = factor(structural_grade), fill = factor(structural_grade))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Pipe Length by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Length(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"),
+                      guide = guide_legend(reverse = TRUE))
+
+b_pl2 <- ggplot(SW_data, aes(x=pipe_length, y = factor(service_grade), fill = factor(service_grade))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Pipe Length by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Length(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor"),
+                      guide = guide_legend(reverse = TRUE))
+
+ggarrange(h_pl, # first row with histogram plot
+          ggarrange(b_pl, b_pl2, ncol=2), # second row with two box plots
+          nrow = 2)
+
+```
+
+## 3.5 Pipe Downstream Depth(m)
+```{r}
+# Histogram plot
+h_d <- ggplot(SW_data, aes(downstream_depth)) +
+  geom_histogram(bins=30, boundary = 0,color="black", fill="grey") +
+  labs(title = "Distribution of Pipe Downstream Depth",
+       x = "Pipe Depth(m)",
+       y = "Count")
+# Box Plot for pipe diameter by conditions
+b_d <- ggplot(SW_data, aes(x=downstream_depth, y = factor(structural_condition), fill = factor(structural_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Downstream Depth by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Depth(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10)) 
+
+b_d2 <- ggplot(SW_data, aes(x=downstream_depth, y = factor(service_condition), fill = factor(service_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Downstream Depth by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Depth(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10))
+
+ggarrange(h_d, # first row with histogram plot
+          ggarrange(b_d, b_d2, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+## 3.6 Pipe Upstream Depth(m)
+```{r}
+# Histogram plot
+h_ud <- ggplot(SW_data, aes(upstream_depth)) +
+  geom_histogram(bins=30, boundary = 0,color="black", fill="grey") +
+  labs(title = "Distribution of Pipe Upstream Depth",
+       x = "Pipe Depth(m)",
+       y = "Count")
+# Box Plot for pipe diameter by conditions
+b_ud <- ggplot(SW_data, aes(x=upstream_depth, y = factor(structural_condition), fill = factor(structural_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Upstream Depth by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Depth(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10))
+
+b_ud2 <- ggplot(SW_data, aes(x=upstream_depth, y = factor(service_condition), fill = factor(service_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Upstream Depth by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Depth(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 10))
+
+ggarrange(h_ud, # first row with histogram plot
+          ggarrange(b_ud, b_ud2, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+## 3.7 Pipe Downstream Invert Level (m)
+```{r}
+SW_data %>%
+  group_by(downstream_invert) %>%
+  summarise(n = n())
+# Histogram plot
+h_dil <- ggplot(SW_data, aes(downstream_invert)) +
+  geom_histogram(bins=30, boundary = 0,color="black", fill="grey") +
+  labs(title = "Distribution of Pipe Downstream Invert Level",
+       x = "Invert Level(m)",
+       y = "Count")
+# Box Plot for pipe diameter by conditions
+b_dil <- ggplot(SW_data, aes(x=downstream_invert, y = factor(structural_condition), fill = factor(structural_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Downstream Invert Level by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Invert Level(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 8))
+
+b_dil2 <- ggplot(SW_data, aes(x=downstream_invert, y = factor(service_condition), fill = factor(service_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Downstream Invert Level by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Invert Level(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 8))
+
+ggarrange(h_dil, # first row with histogram plot
+          ggarrange(b_dil, b_dil2, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+## 3.8 Pipe Upstream Invert Level (m)
+```{r}
+SW_data %>%
+  group_by(upstream_invert) %>%
+  summarise(n = n())
+# Histogram plot
+h_uil <- ggplot(SW_data, aes(upstream_invert)) +
+  geom_histogram(bins=30, boundary = 0,color="black", fill="grey") +
+  labs(title = "Distribution of Pipe Upstream Invert Level",
+       x = "Invert Level(m)",
+       y = "Count")
+# Box Plot for pipe diameter by conditions
+b_uil <- ggplot(SW_data, aes(x=upstream_invert, y = factor(structural_condition), fill = factor(structural_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Upstream Invert Level by Structual Condition",
+       fill = "Structural Condition",
+          y = " ",
+          x = "Invert Level(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 8))
+
+b_uil2 <- ggplot(SW_data, aes(x=upstream_invert, y = factor(service_condition), fill = factor(service_condition))) +
+  geom_boxplot(alpha=0.4) +
+  labs(title= "Upstream Invert Level by Service Condition",
+       fill = "Service Condition",
+          y = " ",
+          x = "Invert Level(m)") +
+  scale_fill_discrete(labels = c("Excellent", "Good", 
+                                 "Moderate", "Poor", "Very Poor")) +
+  theme(plot.title = element_text(size = 8))
+
+ggarrange(h_uil, # first row with histogram plot
+          ggarrange(b_uil, b_uil2, ncol=2), # second row with two box plots
+          nrow = 2)
+```
+
+
+## 3.9 Other categorical variables
+```{r}
+# Pipe Asset Type
+SW_data %>% 
+    count(type = factor(asset_type)) %>% 
+    mutate(pct = prop.table(n)) %>% 
+    ggplot(aes(x = type, y = pct, label = scales::percent(pct))) + 
+    geom_col(position = 'dodge', fill="grey", color="black") + 
+    geom_text(position = position_dodge(width = .9),    # move to center of bars
+              vjust = -0.5,    # nudge above top of bar
+              size = 3) + 
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_discrete(guide = guide_axis(angle=45)) +
+    labs(title = "Distribution of Asset Type",
+         x = "Pipe Type",
+         y = "Percentage")
+
+# Pipe Shape
+SW_data %>% 
+    count(shape = factor(pipe_shape)) %>% 
+    mutate(pct = prop.table(n)) %>% 
+    ggplot(aes(x = shape, y = pct, label = scales::percent(pct))) + 
+    geom_col(position = 'dodge', fill="grey", color="black") + 
+    geom_text(position = position_dodge(width = .9),    # move to center of bars
+              vjust = -0.5,    # nudge above top of bar
+              size = 3) + 
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_discrete(guide = guide_axis(angle=45)) +
+    labs(title = "Distribution of Pipe Shape",
+         x = "Pipe Shape",
+         y = "Percentage")
+
+
+# Pipe Operational Ares
+SW_data %>% 
+    count(ope = factor(oper_area)) %>% 
+    mutate(pct = prop.table(n)) %>% 
+    ggplot(aes(x = ope, y = pct, label = scales::percent(pct))) + 
+    geom_col(position = 'dodge', fill="grey", color="black") + 
+    geom_text(position = position_dodge(width = .9),    # move to center of bars
+              vjust = -0.5,    # nudge above top of bar
+              size = 3) + 
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_discrete(guide = guide_axis(angle=45)) +
+    labs(title = "Distribution of Pipe Operational Area",
+         x = "Area",
+         y = "Percentage")
+
+# Pipe Local Boards
+SW_data %>% 
+    count(board = factor(local_board)) %>% 
+    mutate(pct = prop.table(n)) %>% 
+    ggplot(aes(x = board, y = pct, label = scales::percent(pct))) + 
+    geom_col(position = 'dodge', fill="grey", color="black") + 
+    geom_text(position = position_dodge(width = .9),    # move to center of bars
+              vjust = -0.5,    # nudge above top of bar
+              size = 3) + 
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_discrete(guide = guide_axis(angle=45)) +
+    labs(title = "Distribution of Pipe Local Boards",
+         x = "Surburbs",
+         y = "Percentage")
+
+```
+
+# Correlation matrix 
+```{r}
+# Create a new dataframe only contains numeric variables
+num_col <- SW_data[, c(1,3:6,8:9)]
+# Convert two response variables from strings to numeric values
+#num_col$structural_condition <- as.numeric(num_col$structural_condition)
+#num_col$service_condition <- as.numeric(num_col$service_condition)
+```
+The chart.Correlation function is a shortcut to create a correlation plot in R with histograms, density functions, smoothed regression lines and correlation coefficients with the corresponding significance levels (if no stars, the variable is not statistically significant, while one, two and three stars mean that the corresponding variable is significant at 10%, 5% and 1% levels, respectively).
+```{r}
+chart.Correlation(num_col, histogram = TRUE, method = "pearson")
+```
+The corrplot.mixed function allows drawing correlation matrix with mixed visualization methods like circle, square, number, etc. The number shows coefficients with different color, and the area of circles indicate the absolute value of corresponding correlation coefficients.
+```{r}
+# correlation plot
+corrplot.mixed(cor(num_col),
+               lower = "number",
+               upper = "circle",
+               tl.col = "black",
+               addgrid.col = "black",
+               tl.cex = 0.6)
+```
+
+# 4. Variables Selection
+```{r}
+# response variable: structural condition
+# Data Preparation
+SW <- subset(SW_data,
+                select = c(years, material, diameter,
+                           pipe_length, downstream_depth,
+                           upstream_depth, pipe_shape,
+                           downstream_invert,
+                           upstream_invert, 
+                           oper_area,
+                           local_board,
+                           structural_condition,
+                           service_condition))
+# Export the clean data frame to .csv
+write.csv(SW, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\readytogo_5grades.csv",
+          row.names = FALSE)
+
+```
+
+
+

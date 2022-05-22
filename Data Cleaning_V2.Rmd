@@ -1,0 +1,568 @@
+---
+title: "CCTV Stormwater Pipe Project - Data Cleaning 2 (contain missing values)"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collasped: false
+      smooth_scroll: false
+    toc_depth: 3
+    number_section: true
+date: "`r Sys.Date()`"
+---
+
+<style>
+#header {
+  color: #708090;
+  background-color: #F5F5F5;
+  font-family: Calibri;
+  font-size: 20px;
+}
+
+#TOC {
+  color: #708090;
+  font-family: Calibri;
+  font-size: 16px;
+  border-color: #708090;
+}
+
+body {
+  color: #708090;
+  font-family: Calibri;
+  backgound-color: #F5F5F5;
+}
+
+pre {
+  color: #708090;
+  background-color: #F8F8FF;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.aligh='left')
+```
+
+```{r data, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(anytime) 
+library(eeptools) 
+library(lubridate)
+library(ggplot2)
+library(car)
+library(visdat) 
+
+# Import three datasets
+ins <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/inspection_data.csv")
+pip <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/pipe_data2.csv")
+gis <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/GIS_SW_PIPES.csv")
+```
+
+# Data Cleaning
+
+Three datasets have been imported in this project. One is pipe data sourced from the company's system, one is inspection data contains the results of pipe condition we need, and the last one includes GIS pipe information from Auckland Council. 
+
+```{r datasets, collapse=TRUE}
+# Only select the relevant columns we need from the data sets
+# Inspection data set
+ins_new <- subset(ins, select = c(assetid, Inspection.Date,
+                                  inspection_key,
+                                  #Repairable.Status,
+                                  CCTV...StructuralPeakGrade,
+                                  CCTV...ServicePeakGrade))
+# Structure of new inspection data set
+glimpse(ins_new)
+# Top six rows 
+head(ins_new)
+
+# Pipe data from the company's system
+glimpse(pip) # Structure
+# Check percentage of missing values for each column
+(colMeans(is.na(pip)))*100
+# Drop three columns with more than 80% missing values
+pip_new <- subset(pip, select = -c(downstream_depth, 
+                                 upstream_depth, 
+                                 likelihood_of_failure))
+
+# Structure of GIS data set
+glimpse(gis)
+# Choose the necessary columns we need
+gis_new <- subset(gis, 
+                 select = c(SW_OBJECTTYPE, SW_SAP_ID,
+                            SW_CAPACITY_DEV_SCENARIO,
+                            SW_CRE, SW_DEPTH_DOWNSTREAM_M,
+                            SW_DEPTH_UPSTREAM_M, SW_DIAMETER_MM,
+                            SW_GRADIENT_PC, SW_INSTALLATION_DATE,
+                            SW_INVERT_LEVEL_DOWNSTREAM_M,
+                            SW_INVERT_LEVEL_UPSTREAM_M,
+                            SW_IS_LINED, SW_LENGTH_GIS_M,
+                            SW_MATERIAL, SW_SHAPE, 
+                            SW_OPERATIONAL_AREA, SW_GIS_ID,
+                            SW_STATUS, SW_ASSET_TYPE,
+                            SW_LOCAL_BOARD))
+glimpse(gis_new)
+
+# Merge the datasets
+join1 <- left_join(ins_new, pip_new, 
+                  by = c("assetid" = "assetid"))
+data <- left_join(join1, gis_new,
+                  by = c("sap_id" = "SW_SAP_ID"))
+
+# Structure of the result 
+glimpse(data)
+
+# Observations of top 6 rows
+head(data)
+# Summary of the data set
+summary(data)
+```
+
+# Response Variables
+
+According the 4th edition of NZ Pipe Inspection Manual, both structural and service grades (integers from 1 to 5) use the same peak score ranges. Grade 1-3 indicate good or average condition while Grade 4-5 mean poor or very poor condition that there are defects that have the potential to impact on the structure or serviceability of the pipe. However, based on the 3rd edition of NZ Pipe Inspection Manual, the condition grading system is slightly different, where the grading thresholds are 15 classes from 1.0 (excellent) to 5.8 (fail). 
+
+## Pipe Structual Peak Grade
+```{r pipe-structural-peak-grade, collapse=TRUE}
+# Column CCTV...StructuralPeakGrade
+# Check missing values
+table(is.na(data$CCTV...StructuralPeakGrade))
+# Drop missing values
+data1 <- data %>% 
+  tidyr::drop_na(CCTV...StructuralPeakGrade)
+# Count number of different values in the column
+data1 %>% count(CCTV...StructuralPeakGrade)
+# Based on Pipe Inspection Manual (3rd ed), the minimum grade should be 1, and the maximum is 5.8. Any grades above 3 means poor or fail condition. 
+# Delete the rows of 0 first. 
+data1 <- data1 %>% filter(CCTV...StructuralPeakGrade >= 1)
+# Add a new column which is the response variable
+data2 <- data1 %>% mutate(structural_grade = CCTV...StructuralPeakGrade) 
+# Convert the type of column to factor
+data2$structural_grade <- as.factor(data2$structural_grade)
+# Plot the column
+ggplot(data2, aes(structural_grade, fill = structural_grade)) + 
+  geom_bar() +
+  labs(title = "Distribution of Pipe Structural Grades",
+       x = "Grades",
+       y = "Count") 
+# Structure of data2
+glimpse(data2)
+```
+
+## Pipe Serviceability Peak Grade
+```{r service-peak-grade, collapse=TRUE}
+# Column CCTV...ServicePeakGrade
+# Check missing values
+table(is.na(data2$CCTV...ServicePeakGrade)) # No NAs
+# Count number of different values in the column
+data2 %>% count(CCTV...ServicePeakGrade)
+# Delete the rows of 0 first. 
+data3 <- data2 %>% filter(CCTV...ServicePeakGrade >= 1)
+# Add a new column which is the response variable
+df <- data3 %>% mutate(service_grade = CCTV...ServicePeakGrade) 
+# Convert the type of column to factor
+df$service_grade <- as.factor(df$service_grade)
+# Plot the column
+ggplot(df, aes(service_grade, fill=service_grade)) + 
+  geom_bar() +
+  labs(title = "Distribution of Pipe Service Grades",
+       x = "Grades",
+       y = "Count") 
+```
+
+# Independent Variables
+
+## Pipe Rehabilitation, Repairable Status & Pipe Status
+
+Pipes with higher age have been lined may have better condition than those haven't been lined with younger age, and this will affect the results. Therefore, pipes with rehabilitation need to be excluded in this case. Similarly, pipes have been repaired will also affect the results, then we have to drop these pipes as well. 
+Also, pipe status shows the condition of the asset being abandoned (ABAN), was created by error (DATA), no longer exists (DECO), still in service (INSR), or unverified (UNVF). Of course, existing pipes will be selected at this stage.
+
+```{r pipe-lined, collapse=TRUE}
+# Column SW_IS_LINED
+# Detect missing values in the column
+table(is.na(df$SW_IS_LINED))
+# Check number of values in this column
+df %>% 
+  group_by(SW_IS_LINED) %>%
+  summarise(n = n())
+# Select those pipes have not been lined
+df1 <- subset(df, SW_IS_LINED %in% c("", NA))
+
+# Column Repairable Status 
+#table(is.na(df1$Repairable.Status))
+# Check number of values in this column
+#df1 %>% 
+  #group_by(Repairable.Status) %>%
+  #summarise(n = n())
+# Drop these values of 1 and 2
+#df1 <- df1 %>% filter(Repairable.Status == 0)
+
+# Column SW_STATUS
+# Check number of values in this column
+df1 %>% 
+  group_by(SW_STATUS) %>%
+  summarise(n = n())
+# Only select values of INSR, UNVE and NAs
+df1 <- subset(df1, SW_STATUS %in% c("INSR", "UNVF", NA))
+```
+
+## Pipe Age
+
+Pipe age can be calculated as the difference between pipe install date and pipe inspection date. Years below than 0 and higher than 116 have been excluded due to invalid numbers and outliers. 
+
+```{r pipe-age, collapse=TRUE}
+# Column install_date and Inspection.Date
+# Change the values of install_date into date format
+df1$install_date <- anydate(df1$install_date)
+# Only grab the date without time from the inspection date
+df1$inspection_date <- as.Date(df1$Inspection.Date)
+# Check any missing values 
+table(is.na(df1$install_date))
+table(is.na(df1$inspection_date))
+# Remove rows with missing values
+df2 <- df1 %>% 
+  tidyr::drop_na(c(install_date, inspection_date))
+# Calculate the difference between install date and inspection date to get pipe age.
+#df$years <- lubridate::time_length(difftime(df$inspection_date, df$install_date), "years")
+df2$years <- trunc((df2$install_date %--% df2$inspection_date)/years(1))
+# Count the number of each value in the year column
+df2 %>%
+  group_by(years) %>%
+  summarize(number_rows = n())
+
+# drop rows with negative values
+df2 <- df2 %>% filter(years >= 0)
+
+# Visualize the column years(age at time of inspection)
+hist(df2$years,
+     main="Histogram for Pipe Age",
+     xlab="Age")
+hist(df2$install_date,breaks=50,
+     main="Histogram for Installation Year",
+     xlab="Year")
+
+```
+
+## Pipe Material
+
+We have two columns related to pipe materials in the data set, one is from our system and the other is from AC GIS. And we decided to use the latter because it's more general which can be applied to any other pipe infrastructures. Here is the list of main pipe materials in the dataset: 
+- ABCM (Asbestos Cement)
+- CONC (Concrete)
+- ERWR (Ceramic / Earthenware)
+- PYTH (Polyvinyl)
+- PYVN (Polyvinyl Chloride)
+- Other
+
+```{r pipe-material, collapse=TRUE}
+# Column GIS SW_MATERIAL
+df2 %>%
+  group_by(SW_MATERIAL) %>%
+  summarise(number = n())
+# Remove rows with missing values
+df2 <- subset(df2, SW_MATERIAL != "")
+df3 <- df2 %>% 
+  tidyr::drop_na(SW_MATERIAL)
+
+# Replace the pipe materials whose count number is less than 100 with "OTHR".
+df3$material <- with(df3, 
+                ave(SW_MATERIAL, SW_MATERIAL,
+                FUN = function(i) replace(i, length(i) <100, 'OTHR')))
+# Visualize the column
+ggplot(df3, aes(x=material)) +
+  geom_bar() +
+  ggtitle("Plot of Pipe Materials") +
+  xlab("Pipe Materials")
+
+# Boxplots of distribution of pipe materials by age
+boxplot(df3$years ~ df3$material)
+```
+
+## Pipe Diameter(mm)
+
+There are two columns of pipe diameter in the dataset, one is from our system and the other is from GIS information. We need to make sure those two are matching, and then drop these values are not matching. 
+
+```{r diameter, collapse=TRUE}
+# check any NAs
+table(is.na(df3$diameter))
+# Drop missing 2 values
+df4 <- df3 %>% drop_na(diameter)
+# As the unit of column diameter is m, which needs to be converted into mm.
+df4$diameter <- df4$diameter*1000
+# Check whether or not two columns are matching 
+table(df4$diameter == df4$SW_DIAMETER_MM)
+# It shows 136 values are not matching
+df4[which(df4$diameter != df4$SW_DIAMETER_MM),]
+# Drop these 136 rows by using filter function
+df5 <- subset(df4,diameter == SW_DIAMETER_MM)
+# Check number of each value in the column
+df5 %>% count(diameter)
+# Remove values of "0", "1" and "4" as they are invalid values
+df5 <- df5 %>% filter(diameter >= 100)
+# boxplot of pipe diameter by pipe materials
+boxplot(df5$diameter ~ df5$material)
+summary(df5$diameter)
+# Structure of df4
+glimpse(df5)
+```
+
+## Pipe Length(m)
+
+Same as pipe diameter, there are two exactly pipe length columns in the data set from Mott MacDonald system and GIS information respectively. 
+
+```{r pipe-length, collapse=TRUE}
+# Column SW_LENGTH_GIS_M
+table(is.na(df5$SW_LENGTH_GIS_M)) # no missing values
+# Change the decimals of pipe length to 2 in both columns
+df5$pipe_length <- round(df5$pipe_length, 2)
+df5$SW_LENGTH_GIS_M <- round(df5$SW_LENGTH_GIS_M, 2)
+# Check if the values are matching or not
+table(df5$pipe_length == df5$SW_LENGTH_GIS_M)
+# It shows 1184 observations are not matching, we have to remove them
+df5[which(df5$pipe_length != df5$SW_LENGTH_GIS_M),]
+df6 <- df5 %>% 
+  filter(pipe_length == SW_LENGTH_GIS_M)
+# Summary of pipe length
+summary(df6$pipe_length)
+# Check the number of different values in the column
+df6 %>%
+  group_by(pipe_length) %>%
+  summarise(n = n()) %>%
+  filter(pipe_length >200)
+# Histogram plot of pipe length
+hist((df6$pipe_length))
+# According to the news, the longest pipe is around 470m in Auckland
+df6 <- df6 %>% filter(pipe_length <= 470)
+# Scatter plot of pipe length
+ggplot(df6, aes(x=years, y=pipe_length)) + 
+  geom_point()
+# descriptive summary of pipe length
+summary(df6$pipe_length)
+# Structure of df5
+glimpse(df6)
+```
+
+## Pipe Depth Upstream & Downstream
+```{r pipe-depth, collapse=TRUE}
+# Column SW_DEPTH_UPSTREAM_M)
+table(is.na(df6$SW_DEPTH_UPSTREAM_M))
+# As the proportion of missing values is quite a lot with more than 12%,
+# missing values will be replaced with median number.
+#df7 <- df6 %>% 
+  #mutate(SW_DEPTH_UPSTREAM_M = ifelse(is.na(SW_DEPTH_UPSTREAM_M),
+                                      #median(SW_DEPTH_UPSTREAM_M, na.rm = T),
+                                      #SW_DEPTH_UPSTREAM_M))
+#df7 <- df6 %>% drop_na(SW_DEPTH_UPSTREAM_M)
+# Count the number of different values in the column
+#df7 %>% count(SW_DEPTH_UPSTREAM_M)
+# Drop missing values
+df6 <- drop_na(df6, SW_DEPTH_UPSTREAM_M)
+# Histogram plot
+hist(df6$SW_DEPTH_UPSTREAM_M)
+
+
+# Column SW_DEPTH_DOWNSTREAM_M
+# Check what is the extreme dot
+df6 %>% count(SW_DEPTH_DOWNSTREAM_M)
+# It's impossible to bury a pipe underground with more than 70,000 meters,
+# so we have replaced it with NA.
+df6$SW_DEPTH_DOWNSTREAM_M[df6$SW_DEPTH_DOWNSTREAM_M == 74504] <- NA
+# Detect missing values
+#table(is.na(df7$SW_DEPTH_DOWNSTREAM_M))
+# As the proportion of missing values is quite a lot with more than 10%,
+# missing values will be replaced with median number.
+#df8 <- df7 %>% 
+ # mutate(SW_DEPTH_DOWNSTREAM_M = ifelse(is.na(SW_DEPTH_DOWNSTREAM_M),
+                                     # median(SW_DEPTH_DOWNSTREAM_M, na.rm = T),
+                                     # SW_DEPTH_DOWNSTREAM_M))
+#df8 <- df7 %>% drop_na(SW_DEPTH_DOWNSTREAM_M)
+# Histogram plot
+#hist(df8$SW_DEPTH_DOWNSTREAM_M)
+df6 <- drop_na(df6, SW_DEPTH_DOWNSTREAM_M)
+# Change names 
+colnames(df6)[which(names(df6) == "SW_DEPTH_DOWNSTREAM_M")] <- "downstream_depth"
+colnames(df6)[which(names(df6) == "SW_DEPTH_UPSTREAM_M")] <- "upstream_depth" 
+# Summary of two columns
+rbind(summary(df6$downstream_depth),
+      summary(df6$upstream_depth))
+```
+
+## Invert Level (m)
+
+Invert levels are determined by measuring the vertical distance from sea level to the lowest level of a pipe. Pipe inverts are especially crucial in systems that rely on gravity flow. Therefore, usually the invert level of the pipe's downstream must be lower than the level at the upstream end.   
+
+```{r invert-level, collapse=TRUE}
+# Columns of two downstream invert level
+table(df6$downstream_invert == df6$SW_INVERT_LEVEL_DOWNSTREAM_M)
+
+df7 <- df6 %>% 
+  filter(df6$downstream_invert == df6$SW_INVERT_LEVEL_DOWNSTREAM_M)
+# Check any missing values
+table(is.na(df7$downstream_invert)) # No missing values
+# missing values will be replaced with median number.
+#df9 <- df8 %>% 
+  #mutate(downstream_invert = ifelse(is.na(downstream_invert),
+                                     # median(downstream_invert, na.rm = T),
+                                     # downstream_invert)) %>%
+ # mutate(SW_INVERT_LEVEL_DOWNSTREAM_M = ifelse(is.na(SW_INVERT_LEVEL_DOWNSTREAM_M),
+                                      #median(SW_INVERT_LEVEL_DOWNSTREAM_M, na.rm = T),
+                                    #  SW_INVERT_LEVEL_DOWNSTREAM_M))
+
+
+# Check if the values are matching or not
+#table(df9$downstream_invert == df9$SW_INVERT_LEVEL_DOWNSTREAM_M)
+# It shows 234 values are not matching, which need to be deleted
+#df9 <- subset(df9, downstream_invert == SW_INVERT_LEVEL_DOWNSTREAM_M)
+
+# Histogram plot of downstream invert level
+hist(df7$downstream_invert)
+summary(df7$downstream_invert)
+
+# Column Upstream Invert Level
+table(is.na(df7$upstream_invert))
+# missing values will be replaced with median number.
+#df10 <- df9 %>% 
+  #mutate(upstream_invert = ifelse(is.na(upstream_invert),
+                                      #median(upstream_invert, na.rm = T),
+                                      #upstream_invert)) %>%
+  #mutate(SW_INVERT_LEVEL_UPSTREAM_M = ifelse(is.na(SW_INVERT_LEVEL_UPSTREAM_M),
+                                      #median(SW_INVERT_LEVEL_UPSTREAM_M, na.rm = T),
+                                      #SW_INVERT_LEVEL_UPSTREAM_M))
+# Check if the values are matching or not
+table(df7$upstream_invert == df7$SW_INVERT_LEVEL_UPSTREAM_M)
+## It shows 194 values are not matching, which need to be deleted
+df8 <- df7 %>% 
+  filter(df7$upstream_invert == df7$SW_INVERT_LEVEL_UPSTREAM_M)
+# Check the number of different values in the column
+df8 %>%
+  group_by(upstream_invert) %>%
+  summarise(n=n())
+# Histogram plot
+hist(df8$upstream_invert)
+# Summary statistics
+rbind(summary(df8$downstream_invert),
+      summary(df8$upstream_invert))
+
+```
+
+
+# Pipe Asset Type
+
+There are 8 groups in the column of pipe asset type namely, 
+- BRDG (Pipe Bridge: Any above ground or suspended (bridged) gravity main connected to an existing gravity main.)
+- CULV (Culvert: The part of a gravity pipe crossing under a road, railway line or embankment.)
+- GRVY (Gravity Main: Any part of a stormwater main under gravity flow or gravity feed to a pump station (uphill to downhill) and serves more than one lot.)
+- RISG (Rising Main: Any part of a stormwater main under pressure flow starting from a pump station and connected to a manhole or rising main.)
+- SUBS (Subsoil Drain: Any underground perforated drain or drilled portion of the drain used to improve the run off of surface water and the drainage of ground water to maintain the water table at some depth below the ground.)
+- SYPN (Syphon: Any stormwater pipe deployed in an inverted u-shape and filled until atmospheric pressure is sufficient to force stormwater runoff from one end of the gravity main and out the other end of the gravity main.)
+- TUNL (Tunnel: A tunnel used as gravity main for stormwater flow.)
+
+```{r}
+# Check missing values
+table(is.na(df8$SW_ASSET_TYPE)) # No NAs
+# Count the number of different values in the column
+df8 %>%
+  group_by(SW_ASSET_TYPE) %>%
+  summarise(n = n())
+# Drop the invalid values
+df8 <- subset(df8, SW_ASSET_TYPE != "")
+# change the column name to asset_type
+colnames(df8)[which(names(df8) == "SW_ASSET_TYPE")] <- "asset_type"
+# Distribution plot
+ggplot(df8, aes(asset_type)) +
+  geom_bar()
+```
+
+## Pipe Shape
+
+Based on Table2.11 from 3rd edition of NZ Pipe Inspection Manual, there are 8 categories of pipe shape:
+- ARCH (Arched shape culvert) 
+- BOX (Box type pipe or culvert)
+- CIRC (Circular Pipe)
+- EGG (Egg-Shaped)
+- OVAL(Oval-Shaped)
+- RECT (Rectangular Shape)
+- USHIP (Half Round or U-Shaped) 
+- Others
+
+```{r pipe-shape, collapse=TRUE}
+# Column SW_SHAPE
+table(is.na(df8$SW_SHAPE)) # no NAs
+df8 %>% 
+  group_by(SW_SHAPE) %>%
+  summarise(n=n())
+# Visualize the column
+ggplot(df8, aes(SW_SHAPE)) +
+  geom_bar()  +
+  ggtitle("Plot of Pipe Shape") +
+  xlab("Shape")
+```
+There is no point to keep pipe shape and pipe asset type because one class dominates all over other classes. 
+
+## Other Categorical Varibles
+
+First, column CRE contains the names of the catchment receiving environment that the asset falls into. They are Hibiscus Coast, Islands, Kaipara, Mahurangi, Manukau Harbour, North East, Tamaki, Wairoa, Waitemata and West Coast.
+Second, there are three operational areas in the dataset, namely, stormwater central (SC), stormwater north (SN) and stormwater south (SS). 
+Third, pipe local board shows the suburb areas that pipes are buried. 
+
+```{r categorical-variables, collapse=TRUE}
+# Column SW_CRE
+df8 %>% count(SW_CRE)
+# change the column name to CRE
+colnames(df8)[which(names(df8) == "SW_CRE")] <- "CRE"
+# plot
+ggplot(df8, aes(x=CRE)) +
+  geom_bar() +
+  scale_x_discrete(guide = guide_axis(angle=45))
+
+# Column SW_OBJECTTYPE
+df8 %>% count(SW_OBJECTTYPE)
+
+# Column SW_OPERATIONAL_AREA
+# "SS" means Stormwater South, "SC" is Stormwater Central, and "SN" indicates Stormwatr North
+table(is.na(df8$SW_OPERATIONAL_AREA))
+# Count the number of SS, SC and SN in the column
+df8 %>% 
+  group_by(SW_OPERATIONAL_AREA) %>%
+  summarise(n=n())
+# change the column name to oper_area
+colnames(df8)[which(names(df8) == "SW_OPERATIONAL_AREA")] <- "oper_area"
+# Bar Plot 
+ggplot(df8, aes(x=oper_area, fill = structural_grade)) +
+  geom_bar()
+
+# Pipe Local Board
+df8 %>% count(SW_LOCAL_BOARD)
+# change the column name to CRE
+colnames(df8)[which(names(df8) == "SW_LOCAL_BOARD")] <- "local_board"
+# Convert local board from numbers to factors
+df8$local_board <- as.factor(df8$local_board)
+# plot
+ggplot(df8, aes(x=local_board, fill = factor(structural_grade))) +
+  geom_bar() +
+  scale_x_discrete(guide = guide_axis(angle=45))
+
+```
+
+# Variables Selection
+```{r variable-selection, collapse=TRUE}
+# Select those variables associated with the project topic
+df_clean <- subset(df8, select = c(years, material, diameter,
+                                   pipe_length, downstream_depth,
+                                   upstream_depth, CRE,
+                                   downstream_invert,
+                                   upstream_invert,
+                                   asset_type, CRE,
+                                   oper_area, local_board,
+                                   SW_GIS_ID, geometry,
+                                   structural_grade, service_grade)) 
+head(df_clean)
+# summary
+summary(df_clean)
+
+# Export the clean data frame to .csv
+write.csv(df_clean, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/df_clean.csv",
+          row.names = FALSE)
+```
+
+

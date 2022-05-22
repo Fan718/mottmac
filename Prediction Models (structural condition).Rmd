@@ -1,0 +1,848 @@
+---
+title: "CCTV Stormwater Pipe Project - Prediction Models(Structural Condition)"
+author: "Fan"
+date: '2022-04-10'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(visdat) # visualize missing values
+library(ROSE) # undersampling, oversampling and ROSE 
+library(car) # Check VIF values
+library(InformationValue)
+library(knitr)
+library(broom)
+library(pscl) # Get McFadden index
+library(dominanceanalysis)
+library(caret)
+library(survey) # importance of variables
+library(plotROC)
+library(pROC)
+library(DMwR)
+library(effects)
+library(OddsPlotty)
+# Import dataset
+SW <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\readytogo.csv")
+```
+
+# 1. Data Prep
+
+```{r}
+# Check missing values
+vis_miss(SW) # None NAs
+
+# Structure of the dataset 
+glimpse(SW)
+
+# Drop column geometry 
+SW1 <- subset(SW, select = -c(geometry, service_grade))
+
+# As the percentage of "Circular" pipe is more than 93%, 
+# then we split the values into gravity (1) and others (0)
+#SW$pipe_shape <- ifelse(SW$pipe_shape == "CIRC", 1, 0)
+SW1$CRE <- factor(SW1$CRE, 
+                      labels = c(1,2,3,4,5,6,7),
+                      levels = c("HIBISCUS_COAST", "KAIPARA", "MAHURANGI",
+                                 "MANUKAU_HARBOUR", "NORTH_EAST", "TAMAKI", "WAITEMATA"))
+
+# Convert material column values to numeric values
+SW1$material <- factor(SW1$material, 
+                      labels = c(1,2,3,4,5,6),
+                      levels = c("OTHR", "ABCM", "CONC",
+                                 "ERWR", "PYTH", "PYVN"))
+# Convert operational area column values to numeric values
+SW1$oper_area <- factor(SW1$oper_area, 
+                      labels = c(1,2,3),
+                      levels = c("SC","SN","SS"))
+
+# Convert local board numbers 
+# Albert-Eden(100), Devonport-Takapuna(105), Franklin(110), Henderson-Massey(120), Hibiscus and Bays(125), 
+# Howick(130), Kaipatiki(135), Mangere-Otahuhu (140), Manurewa (145), Maungakiekie-Tamaki (150), 
+# Orakei (155), Otara-Papatoetoe (160), Papakura (165), Puketapapa (170), Rodney (175), 
+# Upper Harbour (180), Waitakere Ranges (190), Waitemata (195), Whau (200)
+SW1$local_board <- factor(SW1$local_board,
+                         labels = c(1:19),
+                         levels = c(100,105,110,120,125,130,135,140,145,150,155,
+                                    160,165,170,175,180,190,195,200))
+
+# Chcek the structure again
+str(SW1)
+
+# Transform the response variable to factor
+SW1$structural_grade <- as.factor(SW1$structural_grade)
+# Check the structure of new dataset
+str(SW1)
+# Observe top six rows
+head(SW1)
+```
+
+```{r}
+# Split the dataset
+set.seed(222)
+spl <- sample(2, nrow(SW1), replace = TRUE, prob = c(0.7, 0.3))
+train <- SW1[spl==1,]
+test <- SW1[spl==2,]
+rbind(dim(train), dim(test))
+```
+
+## Imbalanced datasets
+
+The problem with imbalanced data is that the model being trained would be dominated by the majority class which would be predicted more effectively than the minority class. As we can see from the visual plots of the distribution of pipes by structural and service condition that the number of good conditional pipes are much more than that of poor conditional pipes. As a result, it would result in high value for sensitivity rate and low value for specificity rate. 
+
+Undersampling, oversampling and hybrid methods such as SMOTE have been applied to solve this problem. Undersampling works with the majority class that it reduce the number of good conditional pipes to make the data set balanced. Oversampling works with minority class and it replicated the number of poor conditional pipes to balance the data set. SMOTE technique add new synthetic data points to the minority class and also reduces the majority size. 
+
+```{r}
+# Check classes proportion
+table(train$structural_grade)
+
+# Methods to solve imbalanced data
+# 1. Down Sample the dataset due to imbalanced data in structural condition
+set.seed(100)
+under_train_str <- ovun.sample(structural_grade ~.,
+                              data = train,
+                              method = "under",
+                              4737*2)$data
+table(under_train_str$structural_grade)
+##    0    1 
+##  4737 4737 
+
+# 2. SMOTE technique 
+set.seed(111)
+smoted_train_str <- SMOTE(structural_grade ~., 
+                          train, 
+                          perc.over=100, 
+                          k=5)
+table(smoted_train_str$structural_grade)
+#  0    1 
+# 9474 9474
+```
+
+# 2. Binary Logistic Models
+
+## 2.1 Predicting Pipes in Structural Condition
+
+### 2.1.1 Under sampling dataset 
+
+```{r}
+# Logistic regression models using under sampling dataset
+full_str <- glm(formula = structural_grade ~ .,
+                 family = "binomial", data = under_train_str)
+summary(full_str)
+
+# Perform backward stepwise regression
+backward <- step(full_str, 
+                 direction='backward', 
+                 scope=formula(full_str), 
+                 trace=0)
+summary(backward)
+# Likelihood Test
+backward$anova
+# check multicollinearity
+car::vif(backward)
+# Anova chi-square test to check the overall effect of variables
+anova(backward, test = "Chisq")
+# Drop columns of diameter and upstream_invert
+# Model2
+model_str1 <- glm(structural_grade ~ years + material + 
+                    pipe_length + CRE + 
+                    downstream_invert + local_board,
+                  family = "binomial", 
+                  data = under_train_str)
+summary(model_str1)
+
+# Remove CRE due to its big p-value
+model_str11 <- glm(structural_grade ~ years + pipe_length + 
+                  downstream_invert + material + local_board,
+                  family = "binomial", 
+                  data = under_train_str)
+summary(model_str11)
+# check multicollinearity
+car::vif(model_str11) 
+
+# Model Prediction for the test dataset
+pred1 <- predict(model_str11, test, type = "response")
+
+# Confusion matrix
+pred11 <- ifelse(pred1 > 0.5,1,0)
+caret::confusionMatrix(as.factor(pred11), 
+                test$structural_grade, 
+                mode = "everything")
+
+#              Reference
+# Prediction    0    1
+#         0   3130  642
+#         1   1485  1445
+
+# Get AUC value
+plotROC(test$structural_grade, pred1)# 0.74
+auc_lr <- roc(test$structural_grade, pred1)
+auc_lr
+
+# check the importance of each variable
+varImp(model_str11)
+
+```
+
+### 2.1.2 SMOTE data set 
+```{r}
+# SMOTE dataset
+full_str2 <- glm(formula = structural_grade ~ ., 
+                 family = "binomial", 
+                 data = smoted_train_str)
+summary(full_str2)
+
+# Perform backward stepwise regression
+backward2 <- step(full_str2, 
+                  direction='backward', 
+                  scope=formula(full_str2), 
+                  trace=0)
+summary(backward2)
+# Likelihood Test
+backward2$anova
+# Anova chi-square test to check the overall effect of variables
+anova(backward2, test = "Chisq")
+# Drop column upstream_invert
+model_str2 <- glm(formula = structural_grade ~ 
+                    years + material + diameter + 
+                    pipe_length + CRE + oper_area +
+                    downstream_invert + local_board, 
+                     family = "binomial", 
+                     data = smoted_train_str)
+summary(model_str2)
+# check multicollinearity
+car::vif(model_str2)
+# severe collinearity problem exists between oper_area, CRE and local_board
+# Drop column oper_area 
+model_str2 <- glm(formula = structural_grade ~ 
+                    years + material + diameter + 
+                    pipe_length + CRE +
+                    downstream_invert , 
+                     family = "binomial", 
+                     data = smoted_train_str)
+# Model prediction
+pred2 <- predict(model_str2,test, type="response")
+# Plot ROC curve
+plotROC(test$structural_grade, pred2) #0.73
+# Confusion Matrix
+pred2 <- as.integer(pred2>0.5)
+caret::confusionMatrix(test$structural_grade, 
+                as.factor(pred2), 
+                mode = "everything")
+
+#           Reference
+#Prediction    0    1
+#         0 3349 1266
+#         1  819 1268
+```
+The sensitivity of the model using ROSE train data set (0.50) is much lower than that of model using under sampling train (0.69). Since we are more interested in the pipes of poor condition, we will pick the under sampling train data to be used for the final logistic regression model to predict structural condition of pipes. 
+
+### 2.1.3 Final model to predict structural condition of pipes using Logistic Regression (LR)
+
+```{r}
+# Final model to predict structural condition of pipes using caret package
+str_lr <- model_str11
+summary(str_lr)
+
+
+# Model Prediction for the test dataset
+pred_lr <- predict(str_lr, test, type = "response")
+plotROC(test$structural_grade, pred_lr) # 0.74
+# Model validation 
+pred_lr <- ifelse(pred_lr > 0.5,1,0)
+# Confusion matrix
+cm_lr <- caret::confusionMatrix(as.factor(pred_lr), 
+                test$structural_grade,
+                mode = "everything")
+cm_lr
+
+# Variable Importance
+var_str <- as.matrix(varImp(str_lr))
+var_str <- var_str[order(var_str),]
+var_str
+# Plot significant variables by order
+barplot(var_str, 
+        horiz = TRUE, 
+        main = "Variable Importance", 
+        las=2,
+        cex.axis = 1, 
+        cex.names =0.4)
+
+# Transform the coefficients from log-odds to odds
+exp(str_lr$coefficients)
+
+# Check the results in a data frame
+coff_table <- str_lr %>%
+  tidy(exponentiate = T, conf.int = T) %>%
+  mutate_if(is.numeric, ~round(.,2)) %>%
+  as.data.frame(align = c("l", rep("c",6)))
+# View the table
+print(coff_table)
+# add labels
+coff_table$label <- c("(Intercept)", "Pipe Years", "Pipe Length", "Downstream Invert Level (m)", 
+                      "Material Asbestos Cement", "Material Concrete", "Material Ceramic/Earthenware",
+                      "Material Polyethylene", "Material Polyvinyl Chloride", "Devonport-Takapuna",
+                  "Franklin", "Henderson-Massey",
+                  "Hibiscus and Bays", "Howick", "Kaipatiki",
+                  "Mangere-Otahuhu", "Manurewa",
+                  "Maungakiekie-Tamaki",
+                  "Orakei", "Otara-Papatoetoe",
+                  "Papakura", "Puketapapa", "Rodney",
+                  "Upper Harbour", "Waitakere Ranges",
+                  "Waitemata", "Whau")
+
+ggplot(coff_table, aes(x = estimate, y = label)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), size = .5, height = .2, color = "grey50") +
+  geom_point(size = 3, color = "blue") +
+  xlab("Odds ratio and 95% CI") + 
+  ylab("Variables") +
+  geom_vline(aes(xintercept = 1), color = "red", linetype = "dashed") + 
+  ggtitle("Odds of Pipes in Poor Structural Condition Based on Factors")
+
+# Export the table to cvs file 
+write.csv(coff_table, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/cofficient_table.csv",
+          row.names = FALSE)
+# Plot the 
+plot(allEffects(model_str11))
+```
+Just as we assumed, pipe deteriorates within the age. In terms of materials, the highest chances of pipes being in poor structural condition are those made from earthenware, but PYTH and PYVN pipes have relatively lower chances of getting poor structural conditions because they are new materials.  
+
+The table shows:
+- estimate is the odds ratio
+- std.error is the standard error of the odds ratio
+- statistic is the z-statistic
+- p.value is the significance
+- conf.low is the lower level of the 95% confidence interval for the odds ratios
+- conf.high is the upper level of the 95% confidence interval for the odds ratios
+
+### 2.1.4 Explore the predictors using dominance analysis
+
+Dominance analysis is a method to evaluate the importance of each predictor in multiple regression models such as OLS, GLM and HLM. It's computationally intensive as it builds all subset models (2^6-1 models), 
+For ordinary least squares regressions, the predictors’ additional contribution to a certain subset model is defined as the change in R2 when the predictor is added to the model. In logistic regressions, several analogues of R2 were proposed as measures of model fit, but only four were considered according to three criteria (Azen and Traxel, 2009). 
+
+```{r}
+pR2(str_lr)
+# McFadden (r2.m), Cox and Snell (r2.cs), Nagelkerke (r2.n), and Estrella (r2.e).
+da.glm.fit()("names")
+# perform dominance analysis
+da_str <- dominanceAnalysis(str_lr)
+summary(da_str)
+# print the results of showing the McFadden index
+getFits(da_str, "r2.m")
+```
+The first row represents the raw values of each univariate model. The following rows show the additional contribution of each predictor added to the subset model. Also, if the additional 
+```{r}
+dominanceMatrix(da_str,
+                type = "complete",
+                fit.functions = "r2.m",
+                ordered = TRUE)
+
+plot(da_str, 
+     which.graph = "conditional",
+     fit.function = "r2.m")
+
+# explore general dominance by using average method
+averageContribution(da_str, fit.functions = "r2.m")
+# plot the average contribution
+plot(da_str, 
+     which.graph = "general",
+     fit.function = "r2.m")
+
+```
+
+### 2.1.5 Deterioration Curve of Pipe Structural Condition
+
+Explore the predicted probability of pipes being in poor structural condition by age in different materials.
+
+```{r}
+# Summary of SW dataset to get median
+summary(SW)
+
+## New data set to explore the predicted probability of pipes
+## in poor structural condition by age in different materials.
+newdata <- expand.grid(years = seq(0, 200, by=1),
+  material = factor(4:6),
+  local_board = factor(16), # Set local board area to Upper Harbour
+  downstream_invert = 0,
+  pipe_length = 34.43)
+# predicted values using the final model
+pred_prob <- augment(str_lr,
+                     type.predict = "response",
+                     newdata = newdata,
+                     se_fit = TRUE)
+plotdata <- pred_prob %>%
+  rename(predprob = .fitted,
+         se = .se.fit)
+# Print plot to a png file
+png("material.png")
+materialplot <- plotdata %>% 
+  ggplot(aes(x = years, y = predprob, fill = as.factor(material),
+             color = as.factor(material))) +
+  geom_line() +
+  labs(title = "Predicted Probability of Pipes in Poor Structural Condition by Age and Material",
+       color="Material",
+       x = "Age",
+       y = "Predicted Probability") +
+  scale_color_discrete(labels = c("Earthenware",
+                                 "Polyethylene", "Polyvinyl Chloride")) +
+  theme(plot.title = element_text(size = 10))
+ggsave("material.png",
+       width = 12,
+       height =8)
+materialplot
+```
+
+We get the predicted probabilities plotted across the range of ages with separate lines for pipe materials, holding the location at Waitemata, and median value of the rest numeric predictors. Based on the model, we can tell that the probability of pipes in poor structural condition increases in pipe age, but the material of Earthenware is the highest compared to others.
+
+Explore the predicted probability of pipes being in poor structural condition by age in different location boards. 
+- Albert-Eden(1)
+- Devonport-Takapuna(2)
+- Franklin(3)
+- Henderson-Massey(4)
+- Hibiscus and Bays(5)
+- Howick(6)
+- Kaipatiki(7)
+- Mangere-Otahuhu (8)
+- Manurewa (9)
+- Maungakiekie-Tamaki (10)
+- Orakei (11)
+- Otara-Papatoetoe (12)
+- Papakura (13)
+- Puketapapa (14)
+- Rodney (15)
+- Upper Harbour (16)
+- Waitakere Ranges (17)
+- Waitemata (18)
+- Whau (19)
+
+```{r}
+## Another new data set to explore the predicted probability of concrete pipes
+## in poor structural condition by age in different location suburbs
+## which are significant in the model
+## while keep other predictors using the median number
+newdata2 <- expand.grid(years = seq(0,200,by=1),
+  material = factor(3), # Set concrete pipe
+  local_board = factor(c(1:19)), 
+  downstream_invert = 0,
+  pipe_length = 34.43)
+# predicted values using the final model
+pred_prob2 <- augment(str_lr,
+                     type.predict = "response",
+                     newdata = newdata2,
+                     se_fit = TRUE)
+plotdata <- pred_prob2 %>%
+  rename(predprob = .fitted,
+         se = .se.fit)
+plotdata %>% 
+  mutate(local_board = fct_reorder(local_board, predprob, min)) %>%
+  ggplot(aes(x = years, y = predprob,
+             color = as.factor(local_board))) +
+  geom_line() +
+  labs(title = "Predicted Probability of Pipes in Poor Structural Condition by Age and Pipe Locations",
+       color="Local Board",
+       x = "Age",
+       y = "Predicted Probability") +
+  theme(plot.title = element_text(size = 10))
+
+# Then we can see the top 3 best local boards are 10,15,18
+# and the top 3 worst local borads are 3, 14, 17
+# So we can compare these six together 
+
+newdata3 <- expand.grid(years = seq(0,200,by=1),
+  material = factor(3), # Set concrete pipe
+  local_board = factor(c(3, 10, 14, 15, 17, 18)), 
+  downstream_invert = 0,
+  pipe_length = 34.43)
+# predicted values using the final model
+pred_prob3 <- augment(str_lr,
+                     type.predict = "response",
+                     newdata = newdata3,
+                     se_fit = TRUE)
+plotdata <- pred_prob3 %>%
+  rename(predprob = .fitted,
+         se = .se.fit)
+plotdata %>% 
+  ggplot(aes(x = years, y = predprob, fill = as.factor(local_board),
+             color = as.factor(local_board))) +
+  geom_line() +
+  labs(title = "Predicted Probability of Pipes in Poor Structural Condition by Age and Pipe Locations",
+       color="Local Board",
+       x = "Age",
+       y = "Predicted Probability") +
+  scale_color_discrete(labels = c("Franklin", "Maungakiekie-Tamaki",
+                                 "Puketapapa", "Rodney",
+                                 "Waitakere Ranges",
+                                 "Waitemata")) +
+  theme(plot.title = element_text(size = 10))
+
+# Compare the average age of pipes located in different location boards
+# Draw plot
+ggplot(SW1, aes(local_board, years)) + 
+  geom_boxplot() + coord_flip() +
+  scale_x_discrete(labels = c("Albert-Eden", "Devonport-Takapuna",
+                  "Franklin", "Henderson-Massey",
+                  "Hibiscus and Bays", "Howick", "Kaipatiki",
+                  "Mangere-Otahuhu", "Manurewa",
+                  "Maungakiekie-Tamaki",
+                  "Orakei", "Otara-Papatoetoe",
+                  "Papakura", "Puketapapa", "Rodney",
+                  "Upper Harbour", "Waitakere Ranges",
+                  "Waitemata", "Whau"))
+```
+
+We get the predicted probabilities plotted across the range of ages from 0 to 200 with separate lines for pipe from different local boards, holding the pipe material as concrete, and median value of the rest numeric predictors. Based on the model, we can tell that the probability of pipes in poor structural condition increases in pipe age, and pipes located in Hibiscus and Bays, Howick, and Upper Harbour are performing better than other pipes.
+
+
+# 3. Classification models
+
+## 3.1 Decision Tree
+
+```{r}
+# Decision tree using other packages
+library(rpart)
+library(rpart.plot)
+library(pROC)
+# Decision Tree model  
+str_tree <- rpart(structural_grade ~ .,
+                   data = train,
+                   cp = 0.001, # set complexity parameter
+                   maxdepth = 6, # set maximum tree depth
+                   minbucket = 100, # set minimum number of obs in leaf nodes
+                   method = "class")
+# View the model
+summary(str_tree)
+# Plot the tree
+rpart.plot(str_tree, 
+           type = 5, 
+           extra = 104, # show fitted class, probs, percentages
+           tweak = 1.2, # set text size 
+           box.palette = "GnBu", # color scheme
+           branch.lty =3, # dotted branch lines
+           shadow.col = "gray") # shadows under the node boxes
+rpart.rules(str_tree, extra = 9, cover = TRUE)
+
+# Prediction and model performance
+pred_tree <- predict(str_tree, test, type = "class")
+cm_tree <- caret::confusionMatrix(test$structural_grade, 
+                           pred_tree,
+                           mode = "everything")
+cm_tree
+#          Reference
+# Prediction    0    1
+#         0  4063  552
+#         1  1274  813
+
+# Get AUC value
+predictionprob <- predict(str_tree, test, type="prob")
+auc_tree <- auc(test$structural_grade, predictionprob[,2])
+auc_tree
+
+# Plotting variables importance
+str_tree$variable.importance %>% 
+   data.frame() %>%
+   rownames_to_column(var = "Feature") %>%
+   rename(Overall = '.') %>%
+   ggplot(aes(x = fct_reorder(Feature, Overall), y = Overall)) +
+   geom_pointrange(aes(ymin = 0, ymax = Overall), color = "cadetblue", size = .3) +
+   theme_minimal() +
+   coord_flip() +
+   labs(x = "", y = "", title = "Variable Importance with Decision Tree")
+
+```
+
+## 3.2 Decision Tree C5.0 
+
+```{r}
+library(C50)
+library(highcharter)
+# C50 model to predict structural condition of pipes
+str_c50 <- C5.0(train[,1:11], 
+                  train$structural_grade, 
+                  rules = TRUE)
+# View the model
+summary(str_c50)
+# Prediction 
+pre_c50 <- predict(str_c50, test)
+# Model performance by confusion matrix
+cm_c50 <- caret::confusionMatrix(pre_c50, 
+                          test$structural_grade, 
+                          mode = "everything")
+cm_c50
+
+# C5.0 Tune
+# Recall the C5.0 function, there is an option trials=, 
+# which is an integer specifying the number of boosting iterations. 
+# Now we are trying to find the optimal number of trials 
+acc_test <- numeric()
+accuracy1 <- NULL; accuracy2 <- NULL
+
+for(i in 1:50){
+    learn_imp_c50 <- C5.0(train[,1:11], 
+                          train$structural_grade,
+                          trials = i)      
+    p_c50 <- predict(learn_imp_c50, test) 
+    accuracy1 <- caret::confusionMatrix(p_c50, test$structural_grade)
+    accuracy2[i] <- accuracy1$overall[1]
+}
+
+acc <- data.frame(t= seq(1,50), cnt = accuracy2)
+
+opt_t <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of trials is", opt_t$t, "(accuracy :", opt_t$cnt,") in C5.0")
+
+# Plot the accuracy of different number of trials
+hchart(acc, 'line', hcaes(t, cnt)) %>%
+  hc_title(text = "Accuracy With Varying Trials (C5.0)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Trials")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+
+
+# Apply optimal trials to show best predict performance in C5.0
+str_opt_c50 <- C5.0(train[,1:11],
+                      train$structural_grade,
+                      trials=opt_t$t) 
+# View the model
+summary(str_opt_c50)
+# Prediction
+pre_opt_c50 <- predict(str_opt_c50, test)
+cm_opt_c50 <- caret::confusionMatrix(pre_opt_c50, 
+                              test$structural_grade,
+                              mode = "everything")
+cm_opt_c50
+
+#          Reference
+#Prediction    0    1
+#         0 4115 1218
+#         1  500  869
+
+# Get auc value
+predictionprob_c50 <- predict(str_opt_c50, test, type="prob")
+auc_tree_c50 <- auc(test$structural_condition, predictionprob_c50[,2])
+auc_tree_c50
+
+```
+
+## 3.3 Random Forest
+
+```{r}
+set.seed(123)
+library(randomForest)
+str_rf <- randomForest(structural_grade ~ .,
+             data = under_train_str, 
+             ntree=500, 
+             proximity=T, 
+             importance=T)
+pre_rf   <- predict(str_rf, test)
+cm_rf    <- caret::confusionMatrix(pre_rf, 
+                            test$structural_grade,
+                            mode = "everything")
+cm_rf
+#          Reference
+#Prediction    0    1
+#         0 3212  572
+#         1 1524 1552
+
+# Checking the variable importance plot
+varImpPlot(str_rf)
+
+# ROC calculation
+library(pROC)
+auc_rf <- roc(test$structural_grade,as.numeric(pre_rf))
+plot(auc_rf)
+auc_rf
+```
+
+## 3.4 Supoprt Vector Machine
+
+```{r}
+library(e1071)
+library(caret)
+str_svm <- svm(structural_grade ~ .,
+             data = under_train_str)
+pre_svm <- predict(str_svm, test)
+cm_svm <- caret::confusionMatrix(pre_svm, test$structural_grade, 
+                          mode = "everything")
+cm_svm
+
+#           Reference
+#Prediction    0    1
+#         0 3062  575
+#         1 1674 1549
+
+# Get auc value
+auc_svm <- roc(test$structural_grade, as.numeric(pre_svm))
+plot(auc_svm)
+auc_svm
+```
+
+## 3.5 Naive Bayes
+
+```{r}
+set.seed(123)
+library(e1071)
+library(caTools)
+library(caret)
+# Naive Bayes model
+str_nb <- naiveBayes(structural_grade ~ .,
+             data = smoted_train_str)
+str_nb
+# Prediction
+pre_nb <- predict(str_nb, test)
+cm_nb <- caret::confusionMatrix(pre_nb, test$structural_grade, 
+                          mode = "everything")
+# Confusion Matrix
+cm_nb
+#          Reference
+#Prediction    0    1
+#         0 3653 1115
+#         1  962  972
+
+# Get auc value
+auc_nb <- roc(test$structural_grade, as.numeric(pre_nb))
+plot(auc_nb)
+auc_nb
+```
+
+## 3.6 Compare accuracy for all models
+
+```{r}
+model_compare <- data.frame(Model = c('Logistic Regression',
+                                      'Decision Tree',
+                                      'Decision Tree C5.0',
+                                      'Random Forest',
+                                      'Support Vector Machine',
+                                      'Naive Bayes'),
+                            Accuracy = c(cm_lr$overall[1],
+                                         cm_tree$overall[1],
+                                         cm_opt_c50$overall[1],
+                                         cm_rf$overall[1],
+                                         cm_svm$overall[1],
+                                         cm_nb$overall[1]),
+                          Sensitivity = c(round(cm_lr[[4]]["Sensitivity"],2),
+                                         round(cm_tree[[4]]["Sensitivity"],2),
+                                         round(cm_opt_c50[[4]]["Sensitivity"],2),
+                                         round(cm_rf[[4]]["Sensitivity"],2),
+                                         round(cm_svm[[4]]["Sensitivity"],2),
+                                         round(cm_nb[[4]]["Sensitivity"],2)),
+                          Specificity = c(round(cm_lr[[4]]["Specificity"],2),
+                                         round(cm_tree[[4]]["Specificity"],2),
+                                         round(cm_opt_c50[[4]]["Specificity"],2),
+                                         round(cm_rf[[4]]["Specificity"],2),
+                                         round(cm_svm[[4]]["Specificity"],2),
+                                         round(cm_nb[[4]]["Specificity"],2)),
+                          F1_score = c(round(cm_lr[[4]]["F1"],2),
+                                 round(cm_tree[[4]]["F1"],2),
+                                 round(cm_opt_c50[[4]]["F1"],2),
+                                 round(cm_rf[[4]]["F1"],2),
+                                 round(cm_svm[[4]]["F1"],2),
+                                 round(cm_nb[[4]]["F1"],2)),
+                          AUC = c(0.76,
+                                  0.73,
+                                  0.76,
+                                  0.70,
+                                  0.69,
+                                  0.65))
+
+# view model compare
+model_compare
+
+# Reshape the dataframe
+score <- model_compare %>%
+  gather(key = PerformanceMetrics, value = Value, Accuracy:AUC)
+score
+# Plot the model scores
+ggplot(score, aes(PerformanceMetrics, Value, fill = Model)) +
+  geom_col(position = "dodge", color = "black") +
+  scale_fill_manual(values = c("Decision Tree" = "aliceblue",
+                               "Decision Tree C5.0" = "antiquewhite1",
+                               "Logistic Regression" = "blueviolet",
+                               "Naive Bayes" = "azure3",
+                               "Random Forest" = "lavenderblush",
+                               "Support Vector Machine" = "cornsilk2"
+                               ))
+```
+
+# 4. Prediction (Structural Condition)
+
+## 4.1 Predicting the structural condition after 5 years, 10 years and 20 years
+
+```{r}
+# number of pipes in good and poor conditions
+table(SW1$structural_condition)
+#    0     1 
+# 15506  6824 
+
+# New dataset of pipes after 5 years
+SW_factors <- subset(SW1, select=c(years, material, pipe_length, 
+         downstream_invert, local_board))
+SW5 <- SW_factors %>% 
+  mutate(years = years + 5)
+summary(SW5)
+# Predicted structural conditions after 5 years
+# using the final logistic model
+pred_prob5 <- predict(str_lr, SW5, type = "response")
+pred_prob5 <- ifelse(pred_prob5>0.5,1,0)
+table(pred_prob5)
+#    0     1 
+#11659 10671
+
+# New dataset of pipes after 10 years
+SW10 <- SW5 %>%
+  mutate(years = years + 5)
+pred_prob10 <- predict(str_lr, SW10, type = "response")
+pred_prob10 <- ifelse(pred_prob10>0.5,1,0)
+table(pred_prob10)
+
+#    0     1 
+# 10496 11834 
+
+# New dataset of 20 years
+SW20 <- SW5 %>%
+  mutate(years = years + 15)
+pred_prob20 <- predict(str_lr, SW20, type = "response")
+pred_prob20 <- ifelse(pred_prob20>0.5,1,0)
+table(pred_prob20) 
+
+#    0     1 
+#  7998 14332
+
+# Combine predicted values together in a dataframe called pipe_future
+pipe_future <- cbind(SW, pred_prob5, pred_prob10, pred_prob20)
+
+# Export this dataset into csv file
+write.csv(pipe_future, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\pipe_future.csv",
+          row.names = FALSE)
+
+```
+
+# Prediction in the whole population
+```{r}
+library(lubridate)
+library(anytime)
+pipe <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/pipe_data2.csv")
+head(pipe)
+pipe_whole <- subset(pipe, select=c(assetid,sap_id, criticality))
+gis <- gis <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/GIS_SW_PIPES.csv")
+head(gis)
+gis_data <- subset(gis, select=c(SW_SAP_ID, SW_INSTALLATION_DATE,
+                            SW_INVERT_LEVEL_DOWNSTREAM_M, SW_LENGTH_GIS_M,
+                            SW_MATERIAL, SW_LOCAL_BOARD))
+head(gis_data)
+# Calculate the pipe age by difference between install date and present
+table(is.na(gis_data$SW_INSTALLATION_DATE))
+gis_data$SW_INSTALLATION_DATE <- anydate(gis_data$SW_INSTALLATION_DATE)
+x_date <- Sys.Date()
+gis_data$pipe_age <- trunc(as.numeric(difftime(x_date, gis_data$SW_INSTALLATION_DATE, units = "weeks")) / 52.25)
+table(gis_data$pipe_age)
+```
+

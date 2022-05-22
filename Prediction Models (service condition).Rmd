@@ -1,0 +1,632 @@
+---
+title: "Prediction Models(Service Condition)"
+author: "Fan"
+date: '2022-05-01'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(visdat) # visualize missing values
+library(ROSE) # undersampling, oversampling and ROSE 
+library(car) # Check VIF values
+library(InformationValue)
+library(knitr)
+library(broom)
+library(pscl) # Get McFadden index
+library(dominanceanalysis)
+library(caret)
+library(survey) # importance of variables
+library(plotROC)
+library(pROC)
+library(DMwR)
+library(effects)
+# Import dataset
+SW <- read.csv("C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\readytogo_g45.csv")
+```
+
+# 1. Data Prep
+
+```{r}
+# Drop column geometry 
+SW <- subset(SW, select = -c(geometry, structural_condition, CRE))
+
+# Convert material column values to numeric values
+SW$material <- factor(SW$material, 
+                      labels = c(1,2,3,4,5,6),
+                      levels = c("OTHR", "ABCM", "CONC",
+                                 "ERWR", "PYTH", "PYVN"))
+# Convert operational area column values to numeric values
+SW$oper_area <- factor(SW$oper_area, 
+                      labels = c(1,2,3),
+                      levels = c("SC","SN","SS"))
+
+# Convert local board numbers 
+# Albert-Eden(100), Devonport-Takapuna(105), Franklin(110), Henderson-Massey(120), Hibiscus and Bays(125), 
+# Howick(130), Kaipatiki(135), Mangere-Otahuhu (140), Manurewa (145), Maungakiekie-Tamaki (150), 
+# Orakei (155), Otara-Papatoetoe (160), Papakura (165), Puketapapa (170), Rodney (175), 
+# Upper Harbour (180), Waitakere Ranges (190), Waitemata (195), Whau (200)
+SW$local_board <- factor(SW$local_board,
+                         labels = c(1:19),
+                         levels = c(100,105,110,120,125,130,135,140,145,150,155,
+                                    160,165,170,175,180,190,195,200))
+
+# Chcek the structure again
+str(SW)
+
+# Transform the response variable to factor
+SW$service_condition <- as.factor(SW$service_condition)
+# Check the structure of new dataset
+str(SW)
+# Observe top six rows
+head(SW)
+```
+
+
+```{r}
+# Split the dataset
+set.seed(222)
+spl <- sample(2, nrow(SW), replace = TRUE, prob = c(0.7, 0.3))
+train_ser <- SW[spl==1,]
+test <- SW[spl==2,]
+rbind(dim(train_ser), dim(test))
+
+```
+
+```{r}
+# Check classes proportion
+table(train_ser$service_condition)
+
+# Methods to solve imbalanced data
+# 1. Under Sample the dataset in service condition
+set.seed(100)
+under_train_ser <- ovun.sample(service_condition ~., 
+                              data = train_ser,
+                              method = "under",
+                              N = 2649*2)$data
+table(under_train_ser$service_condition)
+##     0     1 
+##  2649   2649
+
+# 2. SMOTE technique 
+set.seed(111)
+smoted_train_ser <- SMOTE(service_condition ~., 
+                          train_ser,
+                          perc.over=100,
+                          k=5)
+table(smoted_train_ser$service_condition)
+#  0    1 
+# 5298 5298
+```
+## 2.2 Predicting Service condition of Pipes
+
+### 2.2.1 Under sampling train dataset
+
+```{r}
+# Logistic regression
+full_ser <- glm(formula = service_condition ~ ., 
+                 family = "binomial", 
+                data = under_train_ser)
+summary(full_ser)
+
+# Perform backward stepwise regression
+backward3 <- step(full_ser, 
+                  direction='backward', 
+                  scope=formula(full_ser), 
+                  trace=0)
+summary(backward3)
+# Likelihood Test
+backward3$anova
+# Anova chi-square test to check the overall effect of variables
+anova(backward3, test = "Chisq")
+
+# All factors are significant
+model_ser <- glm(formula = service_condition ~ years + material + diameter + 
+    pipe_length + downstream_depth + upstream_depth +  
+    downstream_invert + upstream_invert + local_board, 
+    family = "binomial", 
+    data = under_train_ser)
+summary(model_ser)
+
+# Remove some variables due to large p value
+model_ser2 <- glm(formula = service_condition ~ years + diameter + 
+    pipe_length + downstream_depth + upstream_depth +
+    upstream_invert, 
+    family = "binomial", 
+    data = under_train_ser)
+summary(model_ser2)
+
+## Model prediction
+pred3 <- predict(model_ser2,test, type="response")
+# Plot ROC curve 
+plotROC(test$service_condition, pred3) # 0.69
+pred33 <- as.integer(pred3 > 0.5207)
+## Confusion Matrix
+cm_lr <- confusionMatrix(test$service_condition, 
+                as.factor(pred33))
+cm_lr
+#             Reference
+# Prediction    0    1
+#        0   3626 1982
+#        1    392  702
+```
+It looks like sensitivity is relatively low compared to specificity, then we will try to find the optimal cut off point to improve sensitivity. 
+
+# 2.2.2 Find optimal cut off (Logistic regression)
+
+```{r}
+perform_fn <- function(cutoff) 
+{
+  predicted_ser <- factor(ifelse(pred3 >= cutoff, "1", "0"))
+  conf <- confusionMatrix(predicted_ser, test$service_condition, positive = "1")
+  accuray <- conf$overall[1]
+  sensitivity <- conf$byClass[1]
+  specificity <- conf$byClass[2]
+  out <- t(as.matrix(c(sensitivity, specificity, accuray))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+options(repr.plot.width =8, repr.plot.height =6)
+summary(pred3)
+s = seq(0.01,0.80,length=100)
+OUT = matrix(0,100,3)
+
+for(i in 1:100)
+{
+  OUT[i,] = perform_fn(s[i])
+} 
+
+plot(s, OUT[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),
+     type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT[,2],col="darkgreen",lwd=2)
+lines(s,OUT[,3],col=4,lwd=2)
+box()
+legend("bottom",col=c(2,"darkgreen",4,"darkred"),text.font =3,inset = 0.02,
+       box.lty=0,cex = 0.8, 
+       lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+abline(v = 0.3133, col="red", lwd=1, lty=2)
+axis(1, at = seq(0.1, 1, by = 0.1))
+
+#cutoff <- s[which(abs(OUT[,1]-OUT[,2])<0.01)]
+#cutoff
+```
+
+### 2.2.2 SMOTE train dataset
+
+```{r}
+full_ser2 <- glm(formula = service_condition ~ ., 
+                 family = "binomial", 
+                 data = smoted_train_ser)
+summary(full_ser2)
+
+# Perform backward stepwise regression
+backward4 <- step(full_ser2, 
+                  direction='backward', 
+                  scope=formula(full_ser2), 
+                  trace=0)
+summary(backward4)
+# Likelihood Test
+backward4$anova
+# Anova chi-square test to check the overall effect of variables
+anova(backward4, test = "Chisq")
+
+# Drop upstream invert level factor due to not significant based on ANOVA test
+model_ser2 <- glm(formula = service_condition ~ years + material + diameter + 
+    pipe_length + downstream_depth + upstream_depth +
+    downstream_invert + local_board, 
+    family = "binomial", 
+    data = smoted_train_ser)
+summary(model_ser2)
+
+# check multicollinearity
+car::vif(model_ser2)
+
+## Model prediction
+pred4 <- predict(model_ser2,test, type="response")
+# Plot ROC curve 
+plotROC(test$service_condition, pred4) # 0.68
+pred4 <- as.integer(pred4 > 0.5)
+## Confusion Matrix
+confusionMatrix(test$service_condition, as.factor(pred4))
+
+#            Reference
+#Prediction    0    1
+#         0 3483 2214
+#         1  397  766
+```
+After comparing two methods using different datasets, there is not much difference in specificity and AUC which are the metrics we are looking for. However, two of them performed poorly in predicting pipes in poor condition. But the method using undersampling is slightly better than that using SMOTE method. 
+
+### 2.2.3 Final Model
+
+```{r}
+# Final model to predict service condition of pipes
+ser_lr <- model_ser2
+summary(ser_lr)
+# Variable Importance
+var <- as.matrix(varImp(ser_lr))
+var_ser <- var[order(var),]
+var_ser
+# Plot significant variables by order
+barplot(var_ser, 
+        horiz = TRUE, 
+        main = "Variable Importance", 
+        las=2,
+        cex.axis = 1, 
+        cex.names =0.4)
+# Transform the coefficients from log-odds to odds
+exp(ser_lr$coefficients)
+
+# Check the results in a table
+ser_coff_table <- ser_lr %>%
+  tidy(exponentiate = T, conf.int = T) %>%
+  mutate_if(is.numeric, ~round(.,3)) %>%
+  as.data.frame(align = c("l", rep("c",6)))
+# Export the table to cvs file 
+write.csv(ser_coff_table, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets/ser_cofficient_table.csv",
+          row.names = FALSE)
+```
+
+### 2.2.4 Deterioration Curve of Service Condition
+
+```{r}
+# Summary of SW dataset to get median
+summary(SW)
+
+## New data set to explore the predicted probability of pipes
+## in poor structural condition by age in different materials
+## in the area of Auckland Central with only the circle pipe shape.
+newdata3 <- expand.grid(years = seq(0, 200, by=1),
+  material = factor(1:6),
+  local_board = factor(18), # Set local board area to Waitemata
+  downstream_depth = 2.1,
+  upstream_depth = 1.96,
+  downstream_invert = 0,
+  upstream_invert = 0,
+  pipe_shape = factor(1),
+  diameter = 450,
+  pipe_length = 34.43)
+# predicted values using the final model
+pred_prob <- augment(ser_lr,
+                     type.predict = "response",
+                     newdata = newdata3,
+                     se_fit = TRUE)
+plotdata <- pred_prob %>%
+  rename(predprob = .fitted,
+         se = .se.fit)
+plotdata %>% 
+  ggplot(aes(x = years, y = predprob, fill = as.factor(material),
+             color = as.factor(material))) +
+  geom_line() +
+  labs(title = "Predicted Probability of Pipes in Poor Service Condition by Age and Material",
+       color="Material",
+       x = "Age",
+       y = "Predicted Probability") +
+  scale_color_discrete(labels = c("Other", "Asbestos Cement",
+                                 "Concrete", "Earthenware",
+                                 "Polyvinyl", "Polyvinyl Chloride")) +
+  theme(plot.title = element_text(size = 10))
+```
+
+
+# 3. Classification models
+
+## 3.1 Decision Tree
+
+```{r}
+# Decision tree using other packages
+library(rpart)
+library(rpart.plot)
+library(pROC)
+# Decision Tree model  
+ser_tree <- rpart(service_condition ~ .,
+                   data = smoted_train_ser,
+                   cp = 0.001, # set complexity parameter
+                   maxdepth = 6, # set maximum tree depth
+                   minbucket = 100, # set minimum number of obs in leaf nodes
+                   method = "class")
+# View the model
+summary(ser_tree)
+# Plot the tree
+rpart.plot(ser_tree, 
+           type = 5, 
+           extra = 104, # show fitted class, probs, percentages
+           tweak = 1.2, # set text size 
+           box.palette = "GnBu", # color scheme
+           branch.lty =3, # dotted branch lines
+           shadow.col = "gray") # shadows under the node boxes
+rpart.rules(ser_tree, extra = 9, cover = TRUE)
+
+# Prediction and model performance
+pred_tree <- predict(ser_tree, test, type = "class")
+cm_tree <- confusionMatrix(test$service_condition, 
+                           pred_tree,
+                           mode = "everything")
+cm_tree
+#          Reference
+# Prediction    0    1
+#         0  4063  552
+#         1  1274  813
+
+# Get AUC value
+predictionprob <- predict(ser_tree, test, type="prob")
+auc_tree <- auc(test$service_condition, predictionprob[,2])
+auc_tree
+
+# Plotting variables importance
+ser_tree$variable.importance %>% 
+   data.frame() %>%
+   rownames_to_column(var = "Feature") %>%
+   rename(Overall = '.') %>%
+   ggplot(aes(x = fct_reorder(Feature, Overall), y = Overall)) +
+   geom_pointrange(aes(ymin = 0, ymax = Overall), color = "cadetblue", size = .3) +
+   theme_minimal() +
+   coord_flip() +
+   labs(x = "", y = "", title = "Variable Importance with Decision Tree")
+
+```
+
+## 3.2 Decision Tree C5.0 
+
+```{r}
+library(C50)
+library(highcharter)
+# C50 model to predict structural condition of pipes
+ser_c50 <- C5.0(smoted_train_ser[,1:10], 
+                  smoted_train_ser$service_condition, 
+                  rules = TRUE)
+# View the model
+summary(ser_c50)
+# Prediction 
+pre_c50 <- predict(ser_c50, test)
+# Model performance by confusion matrix
+cm_c50 <- confusionMatrix(pre_c50, 
+                          test$service_condition, 
+                          mode = "everything")
+cm_c50
+
+# C5.0 Tune
+# Recall the C5.0 function, there is an option trials=, 
+# which is an integer specifying the number of boosting iterations. 
+# Now we are trying to find the optimal number of trials 
+acc_test <- numeric()
+accuracy1 <- NULL; accuracy2 <- NULL
+
+for(i in 1:50){
+    learn_imp_c50 <- C5.0(smoted_train_ser[,1:10], 
+                          smoted_train_ser$service_condition,
+                          trials = i)      
+    p_c50 <- predict(learn_imp_c50, test) 
+    accuracy1 <- confusionMatrix(p_c50, test$service_condition)
+    accuracy2[i] <- accuracy1[[4]]['F1']
+}
+
+acc <- data.frame(t= seq(1,50), cnt = accuracy2)
+
+opt_t <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of trials is", opt_t$t, "(accuracy :", opt_t$cnt,") in C5.0")
+
+# Plot the accuracy of different number of trials
+hchart(acc, 'line', hcaes(t, cnt)) %>%
+  hc_title(text = "Accuracy With Varying Trials (C5.0)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Trials")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+
+
+# Apply optimal trials to show best predict performance in C5.0
+ser_opt_c50 <- C5.0(smoted_train_ser[,1:10],
+                      smoted_train_ser$service_condition,
+                      trials=opt_t$t) 
+# View the model
+summary(ser_opt_c50)
+# Prediction
+pre_opt_c50 <- predict(ser_opt_c50, test)
+cm_opt_c50 <- confusionMatrix(pre_opt_c50, 
+                              test$service_condition,
+                              mode = "everything")
+cm_opt_c50
+
+#          Reference
+#Prediction    0    1
+#         0 4315  510
+#         1 1293  584
+
+# Get auc value
+predictionprob_c50 <- predict(ser_opt_c50, test, type="prob")
+auc_tree_c50 <- auc(test$service_condition, predictionprob_c50[,2])
+auc_tree_c50
+
+plot(ser_opt_c50)
+```
+
+## 3.3 Random Forest
+
+```{r}
+set.seed(123)
+library(randomForest)
+ser_rf <- randomForest(service_condition ~ .,
+             data = under_train_ser, 
+             ntree=500, 
+             proximity=T, 
+             importance=T)
+pre_rf   <- predict(ser_rf, test)
+cm_rf    <- confusionMatrix(pre_rf, 
+                            test$service_condition,
+                            mode = "everything")
+cm_rf
+#          Reference
+#Prediction    0    1
+#         0 3  572
+#         1 1524 1552
+
+# Checking the variable importance plot
+varImpPlot(ser_rf)
+
+# ROC calculation
+library(pROC)
+auc_rf <- roc(test$service_condition,as.numeric(pre_rf))
+plot(auc_rf)
+auc_rf
+```
+
+## 3.4 Supoprt Vector Machine
+
+```{r}
+library(e1071)
+library(caret)
+ser_svm <- svm(service_condition ~ .,
+             data = smoted_train_ser)
+pre_svm <- predict(ser_svm, test)
+cm_svm <- confusionMatrix(pre_svm, test$service_condition, 
+                          mode = "everything")
+cm_svm
+
+#           Reference
+#Prediction    0    1
+#         0 4142  508
+#         1 1466  586
+
+# Get auc value
+auc_svm <- roc(test$service_condition, as.numeric(pre_svm))
+plot(auc_svm)
+auc_svm
+```
+
+## 3.5 Naive Bayes
+
+```{r}
+set.seed(123)
+library(e1071)
+library(caTools)
+library(caret)
+# Naive Bayes model
+ser_nb <- naiveBayes(service_condition ~ .,
+             data = smoted_train_ser)
+ser_nb
+# Prediction
+pre_nb <- predict(ser_nb, test)
+cm_nb <- confusionMatrix(pre_nb, test$service_condition, 
+                          mode = "everything")
+# Confusion Matrix
+cm_nb
+#          Reference
+#Prediction    0    1
+#         0 3653 1115
+#         1  962  972
+
+# Get auc value
+auc_nb <- roc(test$service_condition, as.numeric(pre_nb))
+plot(auc_nb)
+auc_nb
+```
+
+## 3.6 Compare accuracy for all models
+
+```{r}
+model_compare <- data.frame(Model = c('Logistic Regression',
+                                      'Decision Tree',
+                                      'Decision Tree C5.0',
+                                      'Random Forest',
+                                      'Support Vector Machine',
+                                      'Naive Bayes'),
+                            Accuracy = c(cm_lr$overall[1],
+                                         cm_tree$overall[1],
+                                         cm_opt_c50$overall[1],
+                                         cm_rf$overall[1],
+                                         cm_svm$overall[1],
+                                         cm_nb$overall[1]),
+                          specificity = c(round(cm_lr[[4]]["Specificity"],2),
+                                         round(cm_tree[[4]]["Specificity"],2),
+                                         round(cm_opt_c50[[4]]["Specificity"],2),
+                                         round(cm_rf[[4]]["Specificity"],2),
+                                         round(cm_svm[[4]]["Specificity"],2),
+                                         round(cm_nb[[4]]["Specificity"],2)),
+                          F1_score = c(round(cm_lr[[4]]["F1"],2),
+                                 round(cm_tree[[4]]["F1"],2),
+                                 round(cm_opt_c50[[4]]["F1"],2),
+                                 round(cm_rf[[4]]["F1"],2),
+                                 round(cm_svm[[4]]["F1"],2),
+                                 round(cm_nb[[4]]["F1"],2)),
+                          AUC = c(0.69,
+                                  0.64,
+                                  0.72,
+                                  0.68,
+                                  0.64,
+                                  0.62))
+
+# view model compare
+model_compare
+
+# Reshape the dataframe
+score <- model_compare %>%
+  gather(key = PerformanceMetrics, value = Value, Accuracy:AUC)
+score
+# Plot the model scores
+ggplot(score, aes(PerformanceMetrics, Value, fill = Model)) +
+  geom_col(position = "dodge", color = "black") +
+  scale_fill_manual(values = c("Decision Tree" = "aliceblue",
+                               "Decision Tree C5.0" = "blueviolet",
+                               "Logistic Regression" = "antiquewhite1",
+                               "Naive Bayes" = "azure3",
+                               "Random Forest" = "lavenderblush",
+                               "Support Vector Machine" = "cornsilk2"
+                               ))
+```
+
+# 4. Prediction (Service Condition)
+
+## 4.1 Predicting the service condition after 5 years, 10 years and 20 years
+
+```{r}
+# number of pipes in good and poor conditions
+table(SW$service_condition)
+#    0     1 
+# 18587  3743 
+
+# New dataset of pipes after 5 years
+SW5 <- SW %>% 
+  mutate(years = years + 5)
+summary(SW5)
+# Predicted structural conditions after 5 years
+# using the final logistic model
+pred_prob5 <- predict(ser_opt_c50, SW5, type = "class")
+table(pred_prob5)
+#    0     1 
+# 15948  6382 
+
+# New dataset of pipes after 10 years
+SW10 <- SW5 %>%
+  mutate(years = years + 5)
+pred_prob10 <- predict(ser_opt_c50, SW10, type = "class")
+table(pred_prob10)
+
+#    0     1 
+# 15418  6912 
+
+# New dataset of 20 years
+SW20 <- SW5 %>%
+  mutate(years = years + 15)
+pred_prob20 <- predict(ser_opt_c50, SW20, type = "class")
+table(pred_prob20) 
+
+#    0     1 
+# 14838  7492 
+
+# Combine predicted values together in a dataframe called pipe_future
+pipe_future_service <- cbind(SW, pred_prob5, pred_prob10, pred_prob20)
+
+
+# Export this dataset into csv file
+write.csv(pipe_future_service, 
+          "C:/Users/fan100199/OneDrive - Mott MacDonald/Desktop/MottMac/Data_sets\\pipe_future_service.csv",
+          row.names = FALSE)
+```
